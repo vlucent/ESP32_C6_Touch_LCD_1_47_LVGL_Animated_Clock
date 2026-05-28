@@ -107,15 +107,20 @@ Connect a **passive buzzer** (not active) between **GPIO 5** and **GND**. If the
 
 ## Software Dependencies
 
-Install board through **Arduino IDE → Tools → Board → Boards Manager**, search `esp32` and install **esp32 by Espressif** (this will provide SD, WiFi & WifiMulti libraries).
+Install board through **Arduino IDE → Tools → Board → Boards Manager**, search `esp32c6 dev module` and click agree to install `esp32 by Espressif`  (this will provide SD, WiFi & WifiMulti libraries).
 
-Install all libraries through **Arduino IDE → Library Manager** unless noted otherwise.
+Install these additional libraries through **Arduino IDE → Library Manager** unless noted otherwise.
 
 | Library | Version tested | Purpose |
 |---|---|---|
 | **LVGL** | 9.5.0 | UI framework — widgets, animations, timers |
-| **Arduino_GFX_Library** | latest | ST7789 display driver |
+| **GFX Library for Arduino** | 1.6.5 | Arduino_GFX_Library, ST7789 display driver |
 | **FastIMU** | latest | QMI8658 accelerometer (tilt brightness + emotion tilt) |
+
+These should already be installed via `esp32 by Espressif`
+
+| Library | Version tested | Purpose |
+|---|---|---|
 | **esp_lcd_touch_axs5106l** | board-specific (included in repo) | Capacitive touch controller |
 | **SD** | built-in ESP32 (pre-install with esp32 Board) | SD card file access |
 | **WiFi / WiFiMulti** | built-in ESP32 (pre-install with esp32 Board) | WiFi connection |
@@ -124,7 +129,7 @@ Install all libraries through **Arduino IDE → Library Manager** unless noted o
 
 ---
 
-## lv_conf.h Settings
+## lv_conf.h Settings [no action required, already set in repo]
 
 After installing LVGL, edit `Arduino/libraries/lvgl/src/lv_conf.h`:
 
@@ -152,7 +157,7 @@ After installing LVGL, edit `Arduino/libraries/lvgl/src/lv_conf.h`:
 
 ## Custom Fonts
 
-### Montserrat 96 (clock digits)
+### Montserrat 96 (clock digits) [no action required, already in repo]
 
 The large clock digits use a custom Montserrat bitmap at 96 px, generated offline to include only the characters needed (digits 0–9 and colon), keeping the file small.
 
@@ -161,7 +166,7 @@ The large clock digits use a custom Montserrat bitmap at 96 px, generated offlin
 3. Settings: Font = `Montserrat-Regular.ttf`, Size = `96`, Range = `0x30-0x3A`, Bpp = `4`, Name = `montserrat_96`
 4. Download `montserrat_96.c` and place it in the sketch folder
 
-### DejaVu Mono (apps menu / ASCII games)
+### DejaVu Mono (apps menu / ASCII games) [no action required, already in repo]
 
 The apps menu and ASCII game screens use DejaVu Sans Mono for fixed-width art rendering. Three sizes are needed: 8, 14, and 16 px.
 
@@ -174,7 +179,7 @@ Arduino will compile them automatically as part of the project.
 
 ---
 
-## SD Card Setup
+## SD Card Setup [located in repo under sd_card_root, copy to sd card]
 
 Format the SD card as **FAT32**. Create the following structure:
 
@@ -556,9 +561,9 @@ Skipped silently if any screen, overlay, or carousel is already open. Alarm and 
    ```
    https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
    ```
-   Then open **Tools → Board → Boards Manager**, search `esp32` and install **esp32 by Espressif**.
+   Then open **Tools → Board → Boards Manager**, search `esp32c6 dev module` and install **esp32 by Espressif**.
 
-4. Select and configure the board — **all settings below are mandatory**:
+4. Select under **Tools → X** and configure the board — **all settings below are mandatory**:
 
    | Setting | Value |
    |---|---|
