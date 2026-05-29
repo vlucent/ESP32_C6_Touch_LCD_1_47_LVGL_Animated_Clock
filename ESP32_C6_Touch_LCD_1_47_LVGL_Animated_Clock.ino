@@ -1767,7 +1767,7 @@ static void modal_longpress_cb(lv_event_t *e);
 static void carousel_build(void);
 
 // ── Invisible tap-zone helper ─────────────────────────────────────────────────
-static lv_obj_t *se_zone(lv_obj_t *p,int x,int y,int w,int h,lv_event_cb_t cb)
+static lv_obj_t *se_zone(lv_obj_t *p,int x,int y,int w,int h,lv_event_cb_t cb, lv_event_code_t trigger)
 {
   lv_obj_t *z=lv_obj_create(p);
   lv_obj_set_size(z,w,h); lv_obj_set_pos(z,x,y);
@@ -1775,8 +1775,9 @@ static lv_obj_t *se_zone(lv_obj_t *p,int x,int y,int w,int h,lv_event_cb_t cb)
   lv_obj_set_style_border_width(z,0,0); lv_obj_set_style_pad_all(z,0,0);
   lv_obj_set_style_radius(z,0,0); lv_obj_set_style_shadow_width(z,0,0);
   lv_obj_clear_flag(z,LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_add_event_cb(z,cb,LV_EVENT_PRESSED,nullptr);
-  lv_obj_add_event_cb(z,cb,LV_EVENT_SHORT_CLICKED,nullptr);
+  // lv_obj_add_event_cb(z,cb,LV_EVENT_PRESSED,nullptr);
+  // lv_obj_add_event_cb(z,cb,LV_EVENT_SHORT_CLICKED,nullptr);
+  lv_obj_add_event_cb(z,cb,trigger,nullptr);
   lv_obj_add_event_cb(z,modal_longpress_cb,LV_EVENT_LONG_PRESSED,nullptr);
   return z;
 }
@@ -1787,11 +1788,11 @@ static lv_obj_t *se_zone(lv_obj_t *p,int x,int y,int w,int h,lv_event_cb_t cb)
 // static void se_m_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_min=(edit_min+1)%60;se_refresh();}}
 // static void se_m_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_min=(edit_min+59)%60;se_refresh();}}
 // static void se_tog(lv_event_t*e) {if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_enabled=!edit_enabled;se_refresh();}}
-static void se_h_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){edit_hour=(edit_hour+1)%24;se_refresh();}}
-static void se_h_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){edit_hour=(edit_hour+23)%24;se_refresh();}}
-static void se_m_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){edit_min=(edit_min+1)%60;se_refresh();}}
-static void se_m_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){edit_min=(edit_min+59)%60;se_refresh();}}
-static void se_tog(lv_event_t*e) {if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){edit_enabled=!edit_enabled;se_refresh();}}
+static void se_h_up(lv_event_t*e){edit_hour=(edit_hour+1)%24;se_refresh();}
+static void se_h_dn(lv_event_t*e){edit_hour=(edit_hour+23)%24;se_refresh();}
+static void se_m_up(lv_event_t*e){edit_min=(edit_min+1)%60;se_refresh();}
+static void se_m_dn(lv_event_t*e){edit_min=(edit_min+59)%60;se_refresh();}
+static void se_tog(lv_event_t*e) {edit_enabled=!edit_enabled;se_refresh();}
 
 // Days in month (leap-year aware)
 static int days_in_month(int m, int y)
@@ -1806,12 +1807,12 @@ static int days_in_month(int m, int y)
 // static void se_mon_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_month=(edit_month-2+12)%12+1;int d=days_in_month(edit_month,edit_year);if(edit_day>d)edit_day=d;se_refresh();}}
 // static void se_yr_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_year++;se_refresh();}}
 // static void se_yr_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){if(edit_year>2026)edit_year--;se_refresh();}}
-static void se_day_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){int d=days_in_month(edit_month,edit_year);edit_day=edit_day%d+1;se_refresh();}}
-static void se_day_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){int d=days_in_month(edit_month,edit_year);edit_day=(edit_day-2+d)%d+1;se_refresh();}}
-static void se_mon_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){edit_month=edit_month%12+1;int d=days_in_month(edit_month,edit_year);if(edit_day>d)edit_day=d;se_refresh();}}
-static void se_mon_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){edit_month=(edit_month-2+12)%12+1;int d=days_in_month(edit_month,edit_year);if(edit_day>d)edit_day=d;se_refresh();}}
-static void se_yr_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){edit_year++;se_refresh();}}
-static void se_yr_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){if(edit_year>2026)edit_year--;se_refresh();}}
+static void se_day_up(lv_event_t*e){int d=days_in_month(edit_month,edit_year);edit_day=edit_day%d+1;se_refresh();}
+static void se_day_dn(lv_event_t*e){int d=days_in_month(edit_month,edit_year);edit_day=(edit_day-2+d)%d+1;se_refresh();}
+static void se_mon_up(lv_event_t*e){edit_month=edit_month%12+1;int d=days_in_month(edit_month,edit_year);if(edit_day>d)edit_day=d;se_refresh();}
+static void se_mon_dn(lv_event_t*e){edit_month=(edit_month-2+12)%12+1;int d=days_in_month(edit_month,edit_year);if(edit_day>d)edit_day=d;se_refresh();}
+static void se_yr_up(lv_event_t*e){edit_year++;se_refresh();}
+static void se_yr_dn(lv_event_t*e){if(edit_year>2026)edit_year--;se_refresh();}
 
 // ── Clock editor: HH:MM on top row + DD/MON/YYYY on second row ───────────────
 static void open_clock_editor()
@@ -1890,10 +1891,10 @@ static void open_clock_editor()
   mkarr(MX,MW,TY+TH,LV_SYMBOL_DOWN,false);
 
   int t_mid = TY+TH/2;
-  se_zone(editor_cont,HX,TA,HW,t_mid-TA,se_h_up);
-  se_zone(editor_cont,HX,t_mid,HW,TY+TH-t_mid,se_h_dn);
-  se_zone(editor_cont,MX,TA,MW,t_mid-TA,se_m_up);
-  se_zone(editor_cont,MX,t_mid,MW,TY+TH-t_mid,se_m_dn);
+  se_zone(editor_cont,HX,TA,HW,t_mid-TA,se_h_up,LV_EVENT_SHORT_CLICKED);
+  se_zone(editor_cont,HX,t_mid,HW,TY+TH-t_mid,se_h_dn,LV_EVENT_SHORT_CLICKED);
+  se_zone(editor_cont,MX,TA,MW,t_mid-TA,se_m_up,LV_EVENT_SHORT_CLICKED);
+  se_zone(editor_cont,MX,t_mid,MW,TY+TH-t_mid,se_m_dn,LV_EVENT_SHORT_CLICKED);
 
   // ── Thin divider between time and date rows ───────────────────────────────
   lv_obj_t*div=lv_obj_create(editor_cont);
@@ -1942,12 +1943,12 @@ static void open_clock_editor()
   mkarr(YX, YW, DY-DA,LV_SYMBOL_UP,true);
   mkarr(YX, YW, DY+DH+2,LV_SYMBOL_DOWN,true);
 
-  se_zone(editor_cont,DDX,DY-DA,DDW,DH/2+DA,se_day_up);
-  se_zone(editor_cont,DDX,d_mid,DDW,DH/2+DA+4,se_day_dn);
-  se_zone(editor_cont,MOX,DY-DA,MOW,DH/2+DA,se_mon_up);
-  se_zone(editor_cont,MOX,d_mid,MOW,DH/2+DA+4,se_mon_dn);
-  se_zone(editor_cont,YX, DY-DA,YW, DH/2+DA,se_yr_up);
-  se_zone(editor_cont,YX, d_mid,YW, DH/2+DA+4,se_yr_dn);
+  se_zone(editor_cont,DDX,DY-DA,DDW,DH/2+DA,se_day_up,LV_EVENT_SHORT_CLICKED);
+  se_zone(editor_cont,DDX,d_mid,DDW,DH/2+DA+4,se_day_dn,LV_EVENT_SHORT_CLICKED);
+  se_zone(editor_cont,MOX,DY-DA,MOW,DH/2+DA,se_mon_up,LV_EVENT_SHORT_CLICKED);
+  se_zone(editor_cont,MOX,d_mid,MOW,DH/2+DA+4,se_mon_dn,LV_EVENT_SHORT_CLICKED);
+  se_zone(editor_cont,YX, DY-DA,YW, DH/2+DA,se_yr_up,LV_EVENT_SHORT_CLICKED);
+  se_zone(editor_cont,YX, d_mid,YW, DH/2+DA+4,se_yr_dn,LV_EVENT_SHORT_CLICKED);
 
   lv_obj_t*hint=lv_label_create(editor_cont);
   lv_label_set_text(hint,"hold to save & exit");
@@ -2024,16 +2025,16 @@ static void open_editor(int h,int m,bool enabled,bool show_toggle)
     lv_obj_align(se_onoff_lbl,LV_ALIGN_CENTER,0,0);
     mkarr(TX,TW,VY-AH,LV_SYMBOL_UP);
     mkarr(TX,TW,VY+VH,LV_SYMBOL_DOWN);
-    se_zone(editor_cont,TX,28,TW,(VY+VH/2)-28,se_tog);
-    se_zone(editor_cont,TX,VY+VH/2,TW,172-(VY+VH/2)-18,se_tog);
+    se_zone(editor_cont,TX,28,TW,(VY+VH/2)-28,se_tog,LV_EVENT_SHORT_CLICKED);
+    se_zone(editor_cont,TX,VY+VH/2,TW,172-(VY+VH/2)-18,se_tog,LV_EVENT_SHORT_CLICKED);
   }
 
   mkarr(HX,HW,VY-AH,LV_SYMBOL_UP); mkarr(HX,HW,VY+VH,LV_SYMBOL_DOWN);
   mkarr(MX,MW,VY-AH,LV_SYMBOL_UP); mkarr(MX,MW,VY+VH,LV_SYMBOL_DOWN);
-  se_zone(editor_cont,HX,28,HW,(VY+VH/2)-28,se_h_up);
-  se_zone(editor_cont,HX,VY+VH/2,HW,172-(VY+VH/2)-18,se_h_dn);
-  se_zone(editor_cont,MX,28,MW,(VY+VH/2)-28,se_m_up);
-  se_zone(editor_cont,MX,VY+VH/2,MW,172-(VY+VH/2)-18,se_m_dn);
+  se_zone(editor_cont,HX,28,HW,(VY+VH/2)-28,se_h_up,LV_EVENT_SHORT_CLICKED);
+  se_zone(editor_cont,HX,VY+VH/2,HW,172-(VY+VH/2)-18,se_h_dn,LV_EVENT_SHORT_CLICKED);
+  se_zone(editor_cont,MX,28,MW,(VY+VH/2)-28,se_m_up,LV_EVENT_SHORT_CLICKED);
+  se_zone(editor_cont,MX,VY+VH/2,MW,172-(VY+VH/2)-18,se_m_dn,LV_EVENT_SHORT_CLICKED);
 
   lv_obj_t*hint=lv_label_create(editor_cont);
   lv_label_set_text(hint,"hold to save & exit");
@@ -2101,7 +2102,7 @@ static void modal_close()
 // ── Long-press: save and exit all the way to clock ───────────────────────────
 static void modal_longpress_cb(lv_event_t *e)
 {
-  if (lv_event_get_code(e)!=LV_EVENT_LONG_PRESSED) return;
+  // if (lv_event_get_code(e)!=LV_EVENT_LONG_PRESSED) return;
   lv_indev_wait_release(lv_indev_get_act());
   if (!editor_cont) { modal_close(); return; }
   switch (carousel_idx) {
@@ -2132,9 +2133,17 @@ static void carousel_tap_cb(lv_event_t *e)
 
 // ── Left/right navigation ────────────────────────────────────────────────────
 static void carousel_left_cb(lv_event_t*e)
-{ if(lv_event_get_code(e)==LV_EVENT_PRESSED){carousel_idx=(carousel_idx+3)%4;carousel_build();} }
+{
+  carousel_idx=(carousel_idx+3)%4;
+  carousel_build(); 
+}
+// { if(lv_event_get_code(e)==LV_EVENT_PRESSED){carousel_idx=(carousel_idx+3)%4;carousel_build();} }
 static void carousel_right_cb(lv_event_t*e)
-{ if(lv_event_get_code(e)==LV_EVENT_PRESSED){carousel_idx=(carousel_idx+1)%4;carousel_build();} }
+{
+  carousel_idx=(carousel_idx+1)%4;
+  carousel_build(); 
+}
+// { if(lv_event_get_code(e)==LV_EVENT_PRESSED){carousel_idx=(carousel_idx+1)%4;carousel_build();} }
 
 // ── Rebuild carousel view ─────────────────────────────────────────────────────
 static void carousel_build()
@@ -2163,7 +2172,8 @@ static void carousel_build()
   lv_obj_set_style_text_font(larr,&lv_font_montserrat_48,0);
   lv_obj_set_style_text_color(larr,lv_color_make(80,100,180),0);
   lv_obj_align(larr,LV_ALIGN_LEFT_MID,6,0);
-  se_zone(modal_cont,0,0,60,172,carousel_left_cb);
+  se_zone(modal_cont,0,0,60,172,carousel_left_cb,LV_EVENT_SHORT_CLICKED);
+  // add swipe here maybe?
 
   // Right arrow + zone
   lv_obj_t*rarr=lv_label_create(modal_cont);
@@ -2171,7 +2181,8 @@ static void carousel_build()
   lv_obj_set_style_text_font(rarr,&lv_font_montserrat_48,0);
   lv_obj_set_style_text_color(rarr,lv_color_make(80,100,180),0);
   lv_obj_align(rarr,LV_ALIGN_RIGHT_MID,-6,0);
-  se_zone(modal_cont,260,0,60,172,carousel_right_cb);
+  se_zone(modal_cont,260,0,60,172,carousel_right_cb,LV_EVENT_SHORT_CLICKED);
+  // add swipe here maybe?
 
   // Icon
   lv_obj_t*icon=lv_label_create(modal_cont);
@@ -2237,7 +2248,9 @@ static void carousel_build()
 static void show_carousel(void)
 {
   if (modal_cont || overlay_cont) return;
-  carousel_idx=0;  // always start at CLOCK
+  // carousel_idx=0;  // always start at CLOCK
+  carousel_idx=1;  // disagree, randomly changing the time and date by accident sucks. why is that a priority if I have wifi sync?
+
 
   modal_cont=lv_obj_create(lv_scr_act());
   lv_obj_set_size(modal_cont,LV_PCT(100),LV_PCT(100));
@@ -2547,7 +2560,8 @@ static void apps_close()
 
 static void apps_longpress_cb(lv_event_t *e)
 {
-  if (lv_event_get_code(e) != LV_EVENT_LONG_PRESSED) return;
+  // how paranoid can you be
+  // if (lv_event_get_code(e) != LV_EVENT_LONG_PRESSED) return;
   lv_indev_wait_release(lv_indev_get_act());
   if (app_subphase > 0) {
     metro_stop();
@@ -2561,9 +2575,11 @@ static void apps_longpress_cb(lv_event_t *e)
 }
 
 static void apps_left_cb(lv_event_t *e)
-{ if(lv_event_get_code(e)==LV_EVENT_PRESSED){apps_idx=(apps_idx+4)%5;apps_carousel_build();} }
+{ apps_idx=(apps_idx+4)%5;apps_carousel_build(); }
+// { if(lv_event_get_code(e)==LV_EVENT_PRESSED){apps_idx=(apps_idx+4)%5;apps_carousel_build();} }
 static void apps_right_cb(lv_event_t *e)
-{ if(lv_event_get_code(e)==LV_EVENT_PRESSED){apps_idx=(apps_idx+1)%5;apps_carousel_build();} }
+{ apps_idx=(apps_idx+1)%5;apps_carousel_build(); }
+// { if(lv_event_get_code(e)==LV_EVENT_PRESSED){apps_idx=(apps_idx+1)%5;apps_carousel_build();} }
 
 // Transparent full-screen tap zone helper for game screens
 static lv_obj_t *app_tapzone(lv_obj_t *p, lv_event_cb_t cb)
@@ -3406,7 +3422,7 @@ static void apps_tap_enter_cb(lv_event_t *e)
   }
 }
 
-// ── Apps carousel builder ─────────────────────────────────────────────────────
+// ── Apps carousel builder (the games)─────────────────────────────────────────────────────
 static void apps_carousel_build()
 {
   metro_clear_ui();  // null UI refs before lv_obj_clean frees them
@@ -3532,9 +3548,11 @@ static void show_apps()
 }
 
 // Zone callbacks
+// whyy is this zone code all the way over here?
 static void zone_ul_cb(lv_event_t *e)
 {
-  if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+  // can we disable?
+  // if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
   show_gif_fullscreen(GIF_SMILE_PATH);
   // Start emotion-tilt mode: tilt the device to change the GIF
   if (overlay_cont && imuReady) {
@@ -3740,13 +3758,16 @@ static void show_analog_clock()
 }
 
 static void zone_ur_cb(lv_event_t *e)
-{ if (lv_event_get_code(e) == LV_EVENT_CLICKED) show_analog_clock(); }
+{ show_analog_clock(); }
+// { if (lv_event_get_code(e) == LV_EVENT_CLICKED) show_analog_clock(); }
 
 static void zone_ll_cb(lv_event_t *e)
-{ if (lv_event_get_code(e) == LV_EVENT_CLICKED) show_status_screen(); }
+{ show_status_screen(); }
+// { if (lv_event_get_code(e) == LV_EVENT_CLICKED) show_status_screen(); }
 
 static void zone_lr_cb(lv_event_t *e)
-{ if (lv_event_get_code(e) == LV_EVENT_CLICKED) show_battery_screen(); }
+{ show_battery_screen(); }
+// { if (lv_event_get_code(e) == LV_EVENT_CLICKED) show_battery_screen(); }
 
 static void home_screen_init(void)
 {
@@ -3774,25 +3795,36 @@ static void home_screen_init(void)
 
   // ── Invisible 4-zone touch overlay ───────────────────────────────────────
   // Landscape 320×172. Each quadrant = 160×86 px.
+  // but if 40x40 zone in the corners...
   const struct { int16_t x; int16_t y; lv_event_cb_t cb; } zones[4] = {
     {   0,   0, zone_ul_cb },   // upper-left  → smile GIF
-    { 160,   0, zone_ur_cb },   // upper-right → analog clock
-    {   0,  86, zone_ll_cb },   // lower-left  → WiFi/NTP/date status
-    { 160,  86, zone_lr_cb },   // lower-right → battery
+    { 280,   0, zone_ur_cb },   // upper-right → analog clock
+    {   0,  132, zone_ll_cb },   // lower-left  → WiFi/NTP/date status
+    { 280,  132, zone_lr_cb },   // lower-right → battery
+    // {   0,   0, zone_ul_cb },   // upper-left  → smile GIF
+    // { 160,   0, zone_ur_cb },   // upper-right → analog clock
+    // {   0,  86, zone_ll_cb },   // lower-left  → WiFi/NTP/date status
+    // { 160,  86, zone_lr_cb },   // lower-right → battery
   };
   // Long-press callback for all zones — opens alarm editor
   auto home_longpress = [](lv_event_t *e) {
-    if (lv_event_get_code(e) != LV_EVENT_LONG_PRESSED) return;
+    // see if we can remove this
+    // if (lv_event_get_code(e) != LV_EVENT_LONG_PRESSED) return;
+
     // Swallow the CLICKED that would fire on finger-lift after long press.
     // Without this the zone's CLICKED callback (show_gif / show_battery)
     // fires immediately after the alarm screen opens.
+
+    // wowwww or you could just stop using CLICKED where it shouldn't be used T_T
     lv_indev_wait_release(lv_indev_get_act());
     show_carousel();
   };
 
   for (int i = 0; i < 4; i++) {
     lv_obj_t *z = lv_obj_create(scr);
-    lv_obj_set_size(z, 160, 86);
+    //change zone size? then create a central zone?
+    lv_obj_set_size(z, 40, 40); 
+    // lv_obj_set_size(z, 160, 86); 
     lv_obj_set_pos(z, zones[i].x, zones[i].y);
     lv_obj_set_style_bg_opa(z, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(z, 0, 0);
@@ -3800,10 +3832,28 @@ static void home_screen_init(void)
     lv_obj_set_style_radius(z, 0, 0);
     lv_obj_set_style_shadow_width(z, 0, 0);
     lv_obj_clear_flag(z, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(z, zones[i].cb, LV_EVENT_CLICKED, nullptr);
+    // surely theres a better way to do this instead of being forced to guard
+    // lv_obj_add_event_cb(z, zones[i].cb, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_event_cb(z, zones[i].cb, LV_EVENT_SHORT_CLICKED, nullptr);
     lv_obj_add_event_cb(z, home_longpress, LV_EVENT_LONG_PRESSED, nullptr);
   }
+  // ── Central zone touch overlay ───────────────────────────────────────
+  // Landscape 320×172, lose 40 on left and right side
+  // 240x172, at pos 40,0
+  
+  lv_obj_t *z = lv_obj_create(scr);
+  //change zone size? then create a central zone?
+  lv_obj_set_size(z, 240, 172); 
+  // lv_obj_set_size(z, 160, 86); 
+  lv_obj_set_pos(z, 40, 0);
+  lv_obj_set_style_bg_opa(z, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(z, 0, 0);
+  lv_obj_set_style_pad_all(z, 0, 0);
+  lv_obj_set_style_radius(z, 0, 0);
+  lv_obj_set_style_shadow_width(z, 0, 0);
+  lv_obj_clear_flag(z, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(z, home_longpress, LV_EVENT_SHORT_CLICKED, nullptr); //see, maybe i want to do the same thing for a different trigger
+  lv_obj_add_event_cb(z, home_longpress, LV_EVENT_LONG_PRESSED, nullptr);
 
   // ── Background timers ─────────────────────────────────────────────────────
   battery_timer = lv_timer_create(battery_timer_callback, 1000, nullptr);
