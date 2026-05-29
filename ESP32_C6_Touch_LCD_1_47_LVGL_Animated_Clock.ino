@@ -1776,16 +1776,22 @@ static lv_obj_t *se_zone(lv_obj_t *p,int x,int y,int w,int h,lv_event_cb_t cb)
   lv_obj_set_style_radius(z,0,0); lv_obj_set_style_shadow_width(z,0,0);
   lv_obj_clear_flag(z,LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_event_cb(z,cb,LV_EVENT_PRESSED,nullptr);
+  lv_obj_add_event_cb(z,cb,LV_EVENT_SHORT_CLICKED,nullptr);
   lv_obj_add_event_cb(z,modal_longpress_cb,LV_EVENT_LONG_PRESSED,nullptr);
   return z;
 }
 
 // ── Value edit callbacks ───────────────────────────────────────────────────────
-static void se_h_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_hour=(edit_hour+1)%24;se_refresh();}}
-static void se_h_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_hour=(edit_hour+23)%24;se_refresh();}}
-static void se_m_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_min=(edit_min+1)%60;se_refresh();}}
-static void se_m_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_min=(edit_min+59)%60;se_refresh();}}
-static void se_tog(lv_event_t*e) {if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_enabled=!edit_enabled;se_refresh();}}
+// static void se_h_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_hour=(edit_hour+1)%24;se_refresh();}}
+// static void se_h_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_hour=(edit_hour+23)%24;se_refresh();}}
+// static void se_m_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_min=(edit_min+1)%60;se_refresh();}}
+// static void se_m_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_min=(edit_min+59)%60;se_refresh();}}
+// static void se_tog(lv_event_t*e) {if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_enabled=!edit_enabled;se_refresh();}}
+static void se_h_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){edit_hour=(edit_hour+1)%24;se_refresh();}}
+static void se_h_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){edit_hour=(edit_hour+23)%24;se_refresh();}}
+static void se_m_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){edit_min=(edit_min+1)%60;se_refresh();}}
+static void se_m_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){edit_min=(edit_min+59)%60;se_refresh();}}
+static void se_tog(lv_event_t*e) {if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){edit_enabled=!edit_enabled;se_refresh();}}
 
 // Days in month (leap-year aware)
 static int days_in_month(int m, int y)
@@ -1794,12 +1800,18 @@ static int days_in_month(int m, int y)
   if (m==2 && ((y%4==0&&y%100!=0)||(y%400==0))) return 29;
   return dim[m-1];
 }
-static void se_day_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){int d=days_in_month(edit_month,edit_year);edit_day=edit_day%d+1;se_refresh();}}
-static void se_day_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){int d=days_in_month(edit_month,edit_year);edit_day=(edit_day-2+d)%d+1;se_refresh();}}
-static void se_mon_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_month=edit_month%12+1;int d=days_in_month(edit_month,edit_year);if(edit_day>d)edit_day=d;se_refresh();}}
-static void se_mon_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_month=(edit_month-2+12)%12+1;int d=days_in_month(edit_month,edit_year);if(edit_day>d)edit_day=d;se_refresh();}}
-static void se_yr_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_year++;se_refresh();}}
-static void se_yr_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){if(edit_year>2026)edit_year--;se_refresh();}}
+// static void se_day_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){int d=days_in_month(edit_month,edit_year);edit_day=edit_day%d+1;se_refresh();}}
+// static void se_day_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){int d=days_in_month(edit_month,edit_year);edit_day=(edit_day-2+d)%d+1;se_refresh();}}
+// static void se_mon_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_month=edit_month%12+1;int d=days_in_month(edit_month,edit_year);if(edit_day>d)edit_day=d;se_refresh();}}
+// static void se_mon_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_month=(edit_month-2+12)%12+1;int d=days_in_month(edit_month,edit_year);if(edit_day>d)edit_day=d;se_refresh();}}
+// static void se_yr_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_year++;se_refresh();}}
+// static void se_yr_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){if(edit_year>2026)edit_year--;se_refresh();}}
+static void se_day_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){int d=days_in_month(edit_month,edit_year);edit_day=edit_day%d+1;se_refresh();}}
+static void se_day_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){int d=days_in_month(edit_month,edit_year);edit_day=(edit_day-2+d)%d+1;se_refresh();}}
+static void se_mon_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){edit_month=edit_month%12+1;int d=days_in_month(edit_month,edit_year);if(edit_day>d)edit_day=d;se_refresh();}}
+static void se_mon_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){edit_month=(edit_month-2+12)%12+1;int d=days_in_month(edit_month,edit_year);if(edit_day>d)edit_day=d;se_refresh();}}
+static void se_yr_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){edit_year++;se_refresh();}}
+static void se_yr_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_SHORT_CLICKED){if(edit_year>2026)edit_year--;se_refresh();}}
 
 // ── Clock editor: HH:MM on top row + DD/MON/YYYY on second row ───────────────
 static void open_clock_editor()
@@ -2104,7 +2116,7 @@ static void modal_longpress_cb(lv_event_t *e)
 // ── Carousel tap: enter the selected item ────────────────────────────────────
 static void carousel_tap_cb(lv_event_t *e)
 {
-  if (lv_event_get_code(e)!=LV_EVENT_CLICKED) return;
+  if (lv_event_get_code(e)!=LV_EVENT_SHORT_CLICKED) return;
   switch (carousel_idx) {
     case 0: open_clock_editor(); break;
     case 1: // Timer — always open with Not yet
@@ -2188,6 +2200,7 @@ static void carousel_build()
   // Centre tap zone — uses CLICKED so long-press and tap are mutually
   // exclusive: CLICKED only fires when the finger lifts without triggering
   // LONG_PRESSED, so the editor never opens immediately before closing.
+  // actually, this is what causes a buggy double trigger. short_clicked is what you want
   {
     lv_obj_t *z = lv_obj_create(modal_cont);
     lv_obj_set_size(z,200,172); lv_obj_set_pos(z,60,0);
@@ -2195,7 +2208,9 @@ static void carousel_build()
     lv_obj_set_style_border_width(z,0,0); lv_obj_set_style_pad_all(z,0,0);
     lv_obj_set_style_radius(z,0,0); lv_obj_set_style_shadow_width(z,0,0);
     lv_obj_clear_flag(z,LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(z,carousel_tap_cb,LV_EVENT_CLICKED,nullptr);
+    // super wrong
+    // lv_obj_add_event_cb(z,carousel_tap_cb,LV_EVENT_CLICKED,nullptr);
+    lv_obj_add_event_cb(z,carousel_tap_cb,LV_EVENT_SHORT_CLICKED,nullptr);
     lv_obj_add_event_cb(z,modal_longpress_cb,LV_EVENT_LONG_PRESSED,nullptr);
   }
 
@@ -3303,7 +3318,8 @@ static void metro_build_ui()
     lv_obj_set_style_pad_all(tab, 0, 0);
     lv_obj_clear_flag(tab, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(tab, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(tab, metro_sig_cb, LV_EVENT_CLICKED, (void*)(intptr_t)sigs[i]);
+    // lv_obj_add_event_cb(tab, metro_sig_cb, LV_EVENT_CLICKED, (void*)(intptr_t)sigs[i]);
+    lv_obj_add_event_cb(tab, metro_sig_cb, LV_EVENT_SHORT_CLICKED, (void*)(intptr_t)sigs[i]);
     lv_obj_add_event_cb(tab, apps_longpress_cb, LV_EVENT_LONG_PRESSED, nullptr);
     char stxt[6]; snprintf(stxt, sizeof(stxt), "%d/4", sigs[i]);
     lv_obj_t *slbl = lv_label_create(tab);
@@ -3472,7 +3488,8 @@ static void apps_carousel_build()
     lv_obj_set_style_bg_opa(z,LV_OPA_TRANSP,0); lv_obj_set_style_border_width(z,0,0);
     lv_obj_set_style_pad_all(z,0,0); lv_obj_set_style_radius(z,0,0);
     lv_obj_clear_flag(z,LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(z,apps_tap_enter_cb,LV_EVENT_CLICKED,nullptr);
+    // lv_obj_add_event_cb(z,apps_tap_enter_cb,LV_EVENT_CLICKED,nullptr);
+    lv_obj_add_event_cb(z,apps_tap_enter_cb,LV_EVENT_SHORT_CLICKED,nullptr);
     lv_obj_add_event_cb(z,apps_longpress_cb,LV_EVENT_LONG_PRESSED,nullptr); }
 
   // Hint above dots
@@ -3784,6 +3801,7 @@ static void home_screen_init(void)
     lv_obj_set_style_shadow_width(z, 0, 0);
     lv_obj_clear_flag(z, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(z, zones[i].cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(z, zones[i].cb, LV_EVENT_SHORT_CLICKED, nullptr);
     lv_obj_add_event_cb(z, home_longpress, LV_EVENT_LONG_PRESSED, nullptr);
   }
 
