@@ -167,7 +167,8 @@ LV_FONT_DECLARE(dejavu_mono_16);
 #define BL_PWM_RESOLUTION 8      // 0-255
 #define IMU_ADDRESS       0x6B   // QMI8658
 
-int  brightnessPercent = 50;     // boot brightness
+// int  brightnessPercent = 50;     // boot brightness
+int  brightnessPercent = 100;     // boot brightness
 
 // ─── IMU (QMI8658) — tilt-to-brightness ─────────────────────────────────────
 QMI8658   imu;
@@ -1234,9 +1235,9 @@ static void run_daily_automation(int hour, int minute)
   if (minute % 2 == 0 && !alarm_fires_now) run_scheduled_animation(hour);
 
   // ── Evening dimming ───────────────────────────────────────────────────────
-  if (hour == 19 && minute ==  0) set_brightness(25);
-  if (hour == 19 && minute == 30) set_brightness(10);
-  if (hour == 20 && minute ==  0) set_brightness(1);
+  // if (hour == 19 && minute ==  0) set_brightness(25);
+  // if (hour == 19 && minute == 30) set_brightness(10);
+  // if (hour == 20 && minute ==  0) set_brightness(1);
 
   // ── Sleep animation: auto-start at 20:15 ─────────────────────────────────
   if (hour == 20 && minute == 15) {
@@ -1257,9 +1258,9 @@ static void run_daily_automation(int hour, int minute)
   }
 
   // ── Morning brightness ramp ───────────────────────────────────────────────
-  if (hour ==  6 && minute ==  0) set_brightness(10);
-  if (hour ==  6 && minute == 30) set_brightness(25);
-  if (hour ==  7 && minute ==  0) set_brightness(50);
+  // if (hour ==  6 && minute ==  0) set_brightness(10);
+  // if (hour ==  6 && minute == 30) set_brightness(25);
+  // if (hour ==  7 && minute ==  0) set_brightness(50);
 
   // ── Alarm (from config.ini [alarm]) ──────────────────────────────────────
   //
@@ -1291,7 +1292,8 @@ static void run_daily_automation(int hour, int minute)
       alarm_ntp_pending = false;
       Serial.println("[ALARM] NTP synced — firing pending alarm");
       close_scheduled_gif();
-      set_brightness(50);
+      // set_brightness(50);
+      set_brightness(100);
       show_gif_fullscreen(GIF_ALARM_PATH);
       buzzer_start_alarm();
     } else if (UPTIME_MS > NTP_GIVE_UP_MS) {
@@ -1299,7 +1301,8 @@ static void run_daily_automation(int hour, int minute)
       alarm_ntp_pending = false;
       Serial.println("[ALARM] NTP timeout — showing warning alarm");
       close_scheduled_gif();
-      set_brightness(50);
+      // set_brightness(50);
+      set_brightness(100);
       // Warning overlay: no GIF, just text
       if (!overlay_cont) {
         overlay_cont = make_overlay(lv_color_make(20, 20, 20));
@@ -1334,7 +1337,8 @@ static void run_daily_automation(int hour, int minute)
       Serial.printf("[ALARM] Firing at %02d:%02d (uptime=%lus, NTP=%s)\n",
                     hour, minute, UPTIME_MS / 1000, timeSynced ? "yes" : "no");
       close_scheduled_gif();
-      set_brightness(50);
+      // set_brightness(50);
+      set_brightness(100);
       show_gif_fullscreen(GIF_ALARM_PATH);
       buzzer_start_alarm();
     } else {
