@@ -53,6 +53,7 @@ struct AppConfig {
   char ntp_server[64]         = "pool.ntp.org";   // [clock] ntp_server
   char tz_string[48]          = "CET-1CEST,M3.5.0,M10.5.0/3"; // [clock] tz (POSIX — set once, handles DST forever)
   bool wifi_enabled           = true;        // [wifi] enabled
+  bool ble_enabled            = true;        // [ble] enabled
   bool alarm_enabled          = false;       // [alarm] enabled
   int  alarm_hour             = 7;           // [alarm] time HH
   int  alarm_minute           = 0;           // [alarm] time MM
@@ -103,6 +104,7 @@ static void lvgl_sd_fs_init(void);
 static void show_carousel(void);
 static void save_config(void);
 static void apply_wifi_state(void);
+static void apply_ble_state(void);
 
 
 // ─── Display ─────────────────────────────────────────────────────────────────
@@ -735,6 +737,18 @@ static void apply_wifi_state()
     WiFi.mode(WIFI_OFF);
     wifiConnected = false;
     timeSynced    = false;
+  }
+}
+
+// ── Bluetooth runtime toggle ───────────────────────────────────────────────────────
+static void apply_ble_state()
+{
+  if (cfg.ble_enabled) {
+    Serial.println("[BLE] Enabling...");
+    // and try to...connect to the IR thermometer?
+  } else {
+    Serial.println("[BLE] Disabled by user.");
+    // um yeah, totally disabled man
   }
 }
 
@@ -2223,19 +2237,25 @@ static void carousel_tap_cb(lv_event_t *e)
       cfg.wifi_enabled=!cfg.wifi_enabled;
       apply_wifi_state(); save_config();
       carousel_build(); break;
+    case 4: // Bluetooth
+      cfg.ble_enabled=!cfg.ble_enabled;
+      apply_ble_state();
+      carousel_build(); break;
   }
 }
 
 // ── Left/right navigation ────────────────────────────────────────────────────
 static void carousel_left_cb(lv_event_t*e)
 {
-  carousel_idx=(carousel_idx+3)%4;
+  // carousel_idx=(carousel_idx+3)%4;
+  carousel_idx=(carousel_idx+4)%5;
   carousel_build(); 
 }
 // { if(lv_event_get_code(e)==LV_EVENT_PRESSED){carousel_idx=(carousel_idx+3)%4;carousel_build();} }
 static void carousel_right_cb(lv_event_t*e)
 {
-  carousel_idx=(carousel_idx+1)%4;
+  // carousel_idx=(carousel_idx+1)%4;
+  carousel_idx=(carousel_idx+1)%5;
   carousel_build(); 
 }
 // { if(lv_event_get_code(e)==LV_EVENT_PRESSED){carousel_idx=(carousel_idx+1)%4;carousel_build();} }
@@ -2248,16 +2268,24 @@ static void carousel_build()
   lv_obj_clean(modal_cont);
 
   struct CarouselItem { const char *icon; const char *name; const char *desc; };
-  static const CarouselItem items[4]={
+  static const CarouselItem items[5]={
     {LV_SYMBOL_HOME, "CLOCK",  "Set current time"},
     {LV_SYMBOL_STOP, "TIMER",  "Set countdown"},
     {LV_SYMBOL_BELL, "ALARM",  "Set wake-up alarm"},
     {LV_SYMBOL_WIFI, "WiFi",   nullptr},
+    {LV_SYMBOL_BLUETOOTH, "BLE",   nullptr},
   };
   char wifi_desc[20]={};
   if (carousel_idx==3)
     snprintf(wifi_desc,sizeof(wifi_desc),"Currently: %s",cfg.wifi_enabled?"ON":"OFF");
-  const char *desc=(carousel_idx==3)?wifi_desc:items[carousel_idx].desc;
+  char ble_desc[20]={};
+  if (carousel_idx==4)
+    snprintf(ble_desc,sizeof(ble_desc),"Currently: %s",cfg.ble_enabled?"ON":"OFF");
+
+  const char *desc=
+    (carousel_idx==3)?wifi_desc:
+    (carousel_idx==4)?ble_desc:
+    items[carousel_idx].desc;
 
   lv_obj_add_event_cb(modal_cont,modal_longpress_cb,LV_EVENT_LONG_PRESSED,nullptr);
 
@@ -2284,7 +2312,9 @@ static void carousel_build()
   lv_label_set_text(icon,items[carousel_idx].icon);
   lv_obj_set_style_text_font(icon,&lv_font_montserrat_48,0);
   lv_obj_set_style_text_color(icon,
-    carousel_idx==3&&!cfg.wifi_enabled?lv_color_make(180,60,60):lv_color_make(120,200,255),0);
+    carousel_idx==3&&!cfg.wifi_enabled?lv_color_make(180,60,60):
+    carousel_idx==4&&!cfg.ble_enabled?lv_color_make(180,60,60):
+    lv_color_make(120,200,255),0);
   lv_obj_align(icon,LV_ALIGN_CENTER,0,-28);
 
   // Name
@@ -2329,7 +2359,7 @@ static void carousel_build()
   lv_obj_align(hint,LV_ALIGN_BOTTOM_MID,0,-18);  // above the dots
 
   // Position dots — bottom row
-  for (int i=0;i<4;i++) {
+  for (int i=0;i<5;i++) {
     lv_obj_t*dot=lv_label_create(modal_cont);
     lv_obj_set_style_text_font(dot, &dejavu_mono_14, 0);
     lv_label_set_text(dot, i==carousel_idx ? "\xe2\x97\x8f" : "\xe2\x97\x8b"); // "●" : "○"
