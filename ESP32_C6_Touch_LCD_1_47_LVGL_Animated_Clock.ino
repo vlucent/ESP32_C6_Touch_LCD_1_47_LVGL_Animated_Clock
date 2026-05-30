@@ -134,6 +134,7 @@ lv_timer_t *battery_timer  = nullptr;
 lv_timer_t *clock_timer    = nullptr;
 lv_timer_t *wifi_timer     = nullptr;
 lv_obj_t   *home_bell_lbl  = nullptr;  // bell icon shown on home when alarm ON
+lv_obj_t   *home_wifi_lbl  = nullptr;  // wifi icon shown on home when wifi connected
 lv_obj_t   *alarm_cont     = nullptr;  // alarm editor screen
 
 bool sdCardAvailable  = false;
@@ -1092,22 +1093,32 @@ static void battery_timer_callback(lv_timer_t * /*timer*/)
 //  WIFI + NTP BACKGROUND POLL TIMER  (every 5 s)
 //  Runs entirely from the LVGL timer so it never blocks the display.
 // ══════════════════════════════════════════════════════════════════════════════
+bool wifiConnected_announced = false;
+
 static void wifi_poll_cb(lv_timer_t *t)
 {
   wl_status_t wst = WiFi.status();  // instant read, never blocks
   if (wst == WL_CONNECTED) {
     wifiConnected = true;
+    if (!wifiConnected_announced) {
+      Serial.printf("[WiFi] Connected!\n");
+      update_home_wifi();
+      wifiConnected_announced = true;
+    }
     time_t now = time(nullptr);
     timeSynced = (now >= 8 * 3600 * 2);
     lv_timer_set_period(t, 5000);   // back to 5s when connected
   } else {
+    update_home_wifi();  // should we make it so that it only runs once?
     wifiConnected = false;
     timeSynced    = false;
+    wifiConnected_announced = false;
     // wifiMulti.run() briefly takes the radio lock and stalls the
     // FreeRTOS scheduler for 20-80ms, causing visible UI stutter.
     // Only attempt reconnect when no modal/editor is open, and slow
     // down to every 30s so the stall is infrequent.
     if (!modal_cont && !overlay_cont && !apps_cont && cfg.wifi_enabled) {
+      Serial.printf("[WiFi] Attempting to connect...\n");
       wifiMulti.run(0);
     }
     lv_timer_set_period(t, 30000);  // 30s between reconnect attempts
@@ -2329,8 +2340,9 @@ static void carousel_build()
   lv_label_set_text(desc_lbl,desc);
   lv_obj_set_style_text_font(desc_lbl,&lv_font_montserrat_14,0);
   lv_obj_set_style_text_color(desc_lbl,
-    carousel_idx==3?(cfg.wifi_enabled?lv_color_make(80,200,120):lv_color_make(200,80,80))
-                   :lv_color_make(160,160,180),0);
+    carousel_idx==3?(cfg.wifi_enabled?lv_color_make(80,200,120):lv_color_make(200,80,80)):
+    carousel_idx==4?(cfg.ble_enabled?lv_color_make(80,200,120):lv_color_make(200,80,80)):
+    lv_color_make(160,160,180),0);
   lv_obj_align(desc_lbl,LV_ALIGN_CENTER,0,40);
 
   // Centre tap zone — uses CLICKED so long-press and tap are mutually
@@ -2405,6 +2417,17 @@ static void update_home_bell()
     lv_obj_add_flag(home_bell_lbl, LV_OBJ_FLAG_HIDDEN);
   }
 }
+// Helper: refresh the wifi label on the home screen
+static void update_home_wifi()
+{
+  if (!home_wifi_lbl) return;
+  if (wifiConnected) {
+    lv_label_set_text_fmt(home_wifi_lbl, LV_SYMBOL_WIFI);
+    lv_obj_clear_flag(home_wifi_lbl, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(home_wifi_lbl, LV_OBJ_FLAG_HIDDEN);
+  }
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  HOME SCREEN  —  "Hello!" splash → big clock face + 4-zone invisible touch
@@ -2450,6 +2473,13 @@ static void clock_face_show(lv_timer_t *t)
   lv_obj_set_style_text_opa(home_bell_lbl, LV_OPA_70, 0);
   lv_obj_align(home_bell_lbl, LV_ALIGN_BOTTOM_RIGHT, -8, -4);
   update_home_bell();  // set text + hidden state from cfg
+  
+  // ── Wifi icon (top-right, shown only when wifi is enabled) ──────────
+  home_wifi_lbl = lv_label_create(lv_scr_act());
+  lv_obj_set_style_text_color(home_wifi_lbl, lv_color_make(120,200,255), 0);
+  lv_obj_set_style_text_opa(home_wifi_lbl, LV_OPA_70, 0);
+  lv_obj_align(home_wifi_lbl, LV_ALIGN_TOP_RIGHT, -8, 4);
+  update_home_wifi();  // set text + hidden state from cfg
 
   // Show immediately rather than waiting one full second
   clock_tick_cb(nullptr);
