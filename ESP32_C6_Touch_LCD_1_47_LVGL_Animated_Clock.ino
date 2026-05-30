@@ -59,6 +59,7 @@ struct AppConfig {
   int  alarm_beep_sequences   = 5;           // [alarm] beep_sequences (0=until touch)
   int  timer_hours            = 0;           // [timer] hours
   int  timer_minutes          = 0;           // [timer] minutes
+  int  timer_seconds          = 0;           // [timer] seconds
   int  timer_beep_sequences   = 3;           // [timer] beep_sequences
   bool anim_schedule_enabled  = true;        // [animation] schedule
   int  anim_duration_sec      = 10;          // [animation] duration
@@ -763,7 +764,7 @@ static void countdown_tick_cb(lv_timer_t * /*t*/)
 
 static void timer_start_countdown()
 {
-  countdown_sec = cfg.timer_hours*3600 + cfg.timer_minutes*60;
+  countdown_sec = cfg.timer_minutes*60 + cfg.timer_seconds;
   if (countdown_sec <= 0) return;
   if (countdown_timer) { lv_timer_del(countdown_timer); countdown_timer=nullptr; }
   timer_running   = true;
@@ -1718,6 +1719,7 @@ static lv_obj_t *se_min_lbl    = nullptr;
 static lv_obj_t *se_onoff_lbl  = nullptr;
 static int  edit_hour           = 0;
 static int  edit_min            = 0;
+static int  edit_sec            = 0;
 static bool edit_enabled        = false;
 static int  edit_day            = 1;
 static int  edit_month          = 1;   // 1-12
@@ -1744,8 +1746,13 @@ static void se_flash(lv_obj_t *lbl)
 static void se_refresh()
 {
   if (!se_hour_lbl) return;
-  lv_label_set_text_fmt(se_hour_lbl,"%02d",edit_hour);
-  lv_label_set_text_fmt(se_min_lbl, "%02d",edit_min);
+  if (carousel_idx == 1) {
+    lv_label_set_text_fmt(se_hour_lbl,"%02d",edit_min);
+    lv_label_set_text_fmt(se_min_lbl, "%02d",edit_sec);
+  } else {
+    lv_label_set_text_fmt(se_hour_lbl,"%02d",edit_hour);
+    lv_label_set_text_fmt(se_min_lbl, "%02d",edit_min);
+  }
   if (se_onoff_lbl) {
     if (carousel_idx == 1)  // Timer: Ready!/Not yet
       lv_label_set_text(se_onoff_lbl, edit_enabled?"#00e070 Ready!#":"#808080 Not yet#");
@@ -1792,6 +1799,8 @@ static void se_h_up(lv_event_t*e){edit_hour=(edit_hour+1)%24;se_refresh();}
 static void se_h_dn(lv_event_t*e){edit_hour=(edit_hour+23)%24;se_refresh();}
 static void se_m_up(lv_event_t*e){edit_min=(edit_min+1)%60;se_refresh();}
 static void se_m_dn(lv_event_t*e){edit_min=(edit_min+59)%60;se_refresh();}
+static void se_s_up(lv_event_t*e){edit_sec=(edit_sec+1)%60;se_refresh();}
+static void se_s_dn(lv_event_t*e){edit_sec=(edit_sec+59)%60;se_refresh();}
 static void se_tog(lv_event_t*e) {edit_enabled=!edit_enabled;se_refresh();}
 
 // Days in month (leap-year aware)
@@ -2044,6 +2053,91 @@ static void open_editor(int h,int m,bool enabled,bool show_toggle)
   se_refresh();
 }
 
+// ──Open timer MM:SS (+ optional toggle) editor ─────────────────────────────
+static void open_timer_editor(int m,int s,bool enabled,bool show_toggle)
+{
+  if (editor_cont) { lv_obj_del(editor_cont); editor_cont=nullptr; }
+  se_hour_lbl=se_min_lbl=se_onoff_lbl=nullptr;
+  edit_min=m; edit_sec=s; edit_enabled=enabled;
+
+  editor_cont=lv_obj_create(modal_cont);
+  lv_obj_set_size(editor_cont,320,172); lv_obj_set_pos(editor_cont,0,0);
+  lv_obj_set_style_bg_color(editor_cont,lv_color_make(8,12,28),0);
+  lv_obj_set_style_bg_opa(editor_cont,LV_OPA_COVER,0);
+  lv_obj_set_style_border_width(editor_cont,0,0);
+  lv_obj_set_style_pad_all(editor_cont,0,0);
+  lv_obj_set_style_radius(editor_cont,0,0);
+  lv_obj_clear_flag(editor_cont,LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(editor_cont,modal_longpress_cb,LV_EVENT_LONG_PRESSED,nullptr);
+
+  const int VY=54,VH=52,AH=20;
+  const int HX=42,HW=60,MX=150,MW=60,TX=240,TW=60;
+
+  auto mkcont=[&](int x,int w,int y,int h2)->lv_obj_t*{
+    lv_obj_t*cont=lv_obj_create(editor_cont);
+    lv_obj_set_size(cont,w,h2); lv_obj_set_pos(cont,x,y);
+    lv_obj_set_style_bg_opa(cont,LV_OPA_TRANSP,0);
+    lv_obj_set_style_border_width(cont,0,0); lv_obj_set_style_pad_all(cont,0,0);
+    lv_obj_set_style_radius(cont,0,0); lv_obj_clear_flag(cont,LV_OBJ_FLAG_SCROLLABLE);
+    return cont;
+  };
+  auto mkarr=[&](int x,int w,int y,const char*s){
+    lv_obj_t*a=lv_label_create(editor_cont); lv_label_set_text(a,s);
+    lv_obj_set_style_text_color(a,lv_color_make(100,120,200),0);
+    lv_obj_set_pos(a,x,y); lv_obj_set_width(a,w);
+    lv_obj_set_style_text_align(a,LV_TEXT_ALIGN_CENTER,0);
+  };
+
+  // HH
+  lv_obj_t*hc=mkcont(HX,HW,VY,VH);
+  se_hour_lbl=lv_label_create(hc);
+  lv_obj_set_style_text_font(se_hour_lbl,&lv_font_montserrat_48,0);
+  lv_obj_set_style_text_color(se_hour_lbl,lv_color_white(),0);
+  lv_obj_set_size(se_hour_lbl,LV_SIZE_CONTENT,LV_SIZE_CONTENT);
+  lv_obj_align(se_hour_lbl,LV_ALIGN_CENTER,0,0);
+
+  // Colon
+  lv_obj_t*col=lv_label_create(editor_cont); lv_label_set_text(col,":");
+  lv_obj_set_style_text_font(col,&lv_font_montserrat_48,0);
+  lv_obj_set_style_text_color(col,lv_color_make(140,140,180),0);
+  lv_obj_set_pos(col,124,VY);
+
+  // MM
+  lv_obj_t*mc=mkcont(MX,MW,VY,VH);
+  se_min_lbl=lv_label_create(mc);
+  lv_obj_set_style_text_font(se_min_lbl,&lv_font_montserrat_48,0);
+  lv_obj_set_style_text_color(se_min_lbl,lv_color_white(),0);
+  lv_obj_set_size(se_min_lbl,LV_SIZE_CONTENT,LV_SIZE_CONTENT);
+  lv_obj_align(se_min_lbl,LV_ALIGN_CENTER,0,0);
+
+  if (show_toggle) {
+    lv_obj_t*tc=mkcont(TX,TW,VY+12,VH-24);
+    se_onoff_lbl=lv_label_create(tc);
+    lv_obj_set_style_text_font(se_onoff_lbl,&lv_font_montserrat_16,0);
+    lv_label_set_recolor(se_onoff_lbl,true);
+    lv_obj_set_size(se_onoff_lbl,LV_SIZE_CONTENT,LV_SIZE_CONTENT);
+    lv_obj_align(se_onoff_lbl,LV_ALIGN_CENTER,0,0);
+    mkarr(TX,TW,VY-AH,LV_SYMBOL_UP);
+    mkarr(TX,TW,VY+VH,LV_SYMBOL_DOWN);
+    se_zone(editor_cont,TX,28,TW,(VY+VH/2)-28,se_tog,LV_EVENT_SHORT_CLICKED);
+    se_zone(editor_cont,TX,VY+VH/2,TW,172-(VY+VH/2)-18,se_tog,LV_EVENT_SHORT_CLICKED);
+  }
+
+  mkarr(HX,HW,VY-AH,LV_SYMBOL_UP); mkarr(HX,HW,VY+VH,LV_SYMBOL_DOWN);
+  mkarr(MX,MW,VY-AH,LV_SYMBOL_UP); mkarr(MX,MW,VY+VH,LV_SYMBOL_DOWN);
+  se_zone(editor_cont,HX,28,HW,(VY+VH/2)-28,se_m_up,LV_EVENT_SHORT_CLICKED);
+  se_zone(editor_cont,HX,VY+VH/2,HW,172-(VY+VH/2)-18,se_m_dn,LV_EVENT_SHORT_CLICKED);
+  se_zone(editor_cont,MX,28,MW,(VY+VH/2)-28,se_s_up,LV_EVENT_SHORT_CLICKED);
+  se_zone(editor_cont,MX,VY+VH/2,MW,172-(VY+VH/2)-18,se_s_dn,LV_EVENT_SHORT_CLICKED);
+
+  lv_obj_t*hint=lv_label_create(editor_cont);
+  lv_label_set_text(hint,"hold to save & exit");
+  lv_obj_set_style_text_color(hint,lv_color_make(100,100,120),0);
+  lv_obj_set_style_text_opa(hint,LV_OPA_60,0);
+  lv_obj_align(hint,LV_ALIGN_BOTTOM_MID,0,-4);
+  se_refresh();
+}
+
 // ── Save helpers ──────────────────────────────────────────────────────────────
 static void close_clock_editor()
 {
@@ -2066,7 +2160,8 @@ static void close_clock_editor()
 }
 static void close_timer_editor()
 {
-  cfg.timer_hours=edit_hour; cfg.timer_minutes=edit_min;
+  // cfg.timer_hours=edit_hour; cfg.timer_minutes=edit_min;
+  cfg.timer_minutes=edit_min; cfg.timer_seconds=edit_sec; 
   save_config();
   if (edit_enabled) {
     timer_start_countdown();  // Ready! — start the countdown
@@ -2117,11 +2212,11 @@ static void modal_longpress_cb(lv_event_t *e)
 // ── Carousel tap: enter the selected item ────────────────────────────────────
 static void carousel_tap_cb(lv_event_t *e)
 {
-  if (lv_event_get_code(e)!=LV_EVENT_SHORT_CLICKED) return;
+  // if (lv_event_get_code(e)!=LV_EVENT_SHORT_CLICKED) return;
   switch (carousel_idx) {
     case 0: open_clock_editor(); break;
     case 1: // Timer — always open with Not yet
-      open_editor(cfg.timer_hours,cfg.timer_minutes,false,true); break;
+      open_timer_editor(cfg.timer_minutes,cfg.timer_seconds,false,true); break;
     case 2: // Alarm
       open_editor(cfg.alarm_hour,cfg.alarm_minute,cfg.alarm_enabled,true); break;
     case 3: // WiFi — inline toggle
