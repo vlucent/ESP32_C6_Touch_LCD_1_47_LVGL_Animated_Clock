@@ -137,6 +137,15 @@ lv_obj_t   *home_bell_lbl  = nullptr;  // bell icon shown on home when alarm ON
 lv_obj_t   *home_wifi_lbl  = nullptr;  // wifi icon shown on home when wifi connected
 lv_obj_t   *alarm_cont     = nullptr;  // alarm editor screen
 
+enum OverlayType {
+    OVERLAY_NONE,
+    OVERLAY_STATUS,
+    OVERLAY_GIF,
+    OVERLAY_BATTERY
+};
+
+static OverlayType active_overlay = OVERLAY_NONE;
+
 bool sdCardAvailable  = false;
 bool boot_from_sleep      = false;  // true when waking from deep sleep via BOOT btn
 uint32_t boot_millis       = 0;     // millis() captured at start of setup()
@@ -167,14 +176,19 @@ AccelData accelData;
 bool      imuReady  = false;
 
 // ─── Brightness + tilt timer handles — valid only while Status screen is open ─
-lv_obj_t   *label_brightness = nullptr;
-lv_timer_t *tilt_timer         = nullptr;
+lv_obj_t   *label_brightness    = nullptr;
+lv_obj_t   *label_wifi          = nullptr;
+lv_obj_t   *label_wifi_icon     = nullptr;
+lv_obj_t   *label_ntp           = nullptr;
+lv_obj_t   *label_ntp_icon      = nullptr;
+lv_timer_t *status_timer        = nullptr;
+lv_timer_t *tilt_timer          = nullptr;
 bool        emotion_tilt_active = false;   // true while UL smile GIF is open
 const char *emotion_current_gif = nullptr; // tracks which GIF is showing
-lv_timer_t *buzzer_timer      = nullptr;  // alarm beep pattern timer
-bool        buzzer_active     = false;
-lv_timer_t *sched_close_timer = nullptr;  // auto-close timer for scheduled GIF
-lv_timer_t *aclock_timer      = nullptr;  // 1-min refresh for analog clock overlay
+lv_timer_t *buzzer_timer        = nullptr;  // alarm beep pattern timer
+bool        buzzer_active       = false;
+lv_timer_t *sched_close_timer   = nullptr;  // auto-close timer for scheduled GIF
+lv_timer_t *aclock_timer        = nullptr;  // 1-min refresh for analog clock overlay
 
 // ─── Carousel / modal settings ────────────────────────────────────────────────
 lv_obj_t   *modal_cont   = nullptr;  // carousel / editor full-screen modal
@@ -1094,7 +1108,7 @@ static void battery_timer_callback(lv_timer_t * /*timer*/)
 //  Runs entirely from the LVGL timer so it never blocks the display.
 // ══════════════════════════════════════════════════════════════════════════════
 bool wifiConnected_announced = false;
-
+bool wifiDisconnected_announced = false;
 static void wifi_poll_cb(lv_timer_t *t)
 {
   wl_status_t wst = WiFi.status();  // instant read, never blocks
@@ -1105,11 +1119,15 @@ static void wifi_poll_cb(lv_timer_t *t)
       update_home_wifi();
       wifiConnected_announced = true;
     }
+    wifiDisconnected_announced = false;
     time_t now = time(nullptr);
     timeSynced = (now >= 8 * 3600 * 2);
     lv_timer_set_period(t, 5000);   // back to 5s when connected
   } else {
-    update_home_wifi();  // should we make it so that it only runs once?
+    if (!wifiDisconnected_announced) {
+      update_home_wifi();  // should we make it so that it only runs once?
+      wifiDisconnected_announced = true; 
+    }
     wifiConnected = false;
     timeSynced    = false;
     wifiConnected_announced = false;
@@ -1117,7 +1135,8 @@ static void wifi_poll_cb(lv_timer_t *t)
     // FreeRTOS scheduler for 20-80ms, causing visible UI stutter.
     // Only attempt reconnect when no modal/editor is open, and slow
     // down to every 30s so the stall is infrequent.
-    if (!modal_cont && !overlay_cont && !apps_cont && cfg.wifi_enabled) {
+    // allows wifi to connect with status screen overlay active
+    if (!modal_cont && (!overlay_cont || active_overlay == OVERLAY_STATUS) && !apps_cont && cfg.wifi_enabled) {
       Serial.printf("[WiFi] Attempting to connect...\n");
       wifiMulti.run(0);
     }
@@ -1368,7 +1387,7 @@ static void clock_tick_cb(lv_timer_t * /*t*/)
 // ══════════════════════════════════════════════════════════════════════════════
 static void overlay_close_event_cb(lv_event_t *e)
 {
-  if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+  // if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
   if (overlay_cont) {
     label_adc_raw = nullptr;
     label_voltage = nullptr;
@@ -1383,6 +1402,12 @@ static void overlay_close_event_cb(lv_event_t *e)
       lv_timer_del(tilt_timer);
       tilt_timer = nullptr;
     }
+    // Stop status timer (wifi, ntp)
+    if (status_timer) {
+      lv_timer_del(status_timer);
+      status_timer = nullptr;
+    }
+
     emotion_tilt_active = false;
     emotion_current_gif = nullptr;
     label_brightness = nullptr;  // label is about to be destroyed
@@ -1394,6 +1419,7 @@ static void overlay_close_event_cb(lv_event_t *e)
     buzzer_stop();
     lv_obj_del(overlay_cont);  // frees GIF decoder + canvas automatically
     overlay_cont = nullptr;
+    active_overlay = OVERLAY_NONE;
     Serial.printf("[GIF] closed, heap free=%u\n",
                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT));
   }
@@ -1427,6 +1453,7 @@ static void add_back_hint(lv_obj_t *parent)
 // ══════════════════════════════════════════════════════════════════════════════
 //  SUB-SCREENS
 // ══════════════════════════════════════════════════════════════════════════════
+
 
 // ── GIF fullscreen (upper-left = smile, upper-right = sleep) ─────────────────
 static void show_gif_fullscreen(const char *path)
@@ -1547,7 +1574,37 @@ static void tilt_poll_cb(lv_timer_t * /*t*/)
   }
 }
 
+
 // ── WiFi / NTP / Date status (lower-left) ────────────────────────────────────
+static void update_wifi_status() {
+  lv_obj_set_style_text_color(label_wifi_icon, wifiConnected ? lv_color_make(80, 200, 120) : 
+                                                               lv_color_make(200, 80, 80), 0);
+  if (wifiConnected) {
+    char ssid_buf[48];
+    snprintf(ssid_buf, sizeof(ssid_buf), "WiFi: %s", WiFi.SSID().c_str());
+    lv_label_set_text(label_wifi, ssid_buf);
+    lv_obj_set_style_text_color(label_wifi, lv_color_make(80, 200, 120), 0);
+  } else {
+    lv_label_set_text(label_wifi, "WiFi: disconnected");
+    lv_obj_set_style_text_color(label_wifi, lv_color_make(200, 80, 80), 0);
+  }
+}
+
+static void update_ntp_status() {
+  lv_obj_set_style_text_color(label_ntp_icon, timeSynced ? lv_color_make(80, 200, 120) : 
+                                                           lv_color_make(200, 160, 50), 0);
+  lv_label_set_text(label_ntp, timeSynced ? "NTP: synced" : "NTP: not synced");
+  lv_obj_set_style_text_color(label_ntp, timeSynced ? lv_color_make(80, 200, 120) : 
+                                                      lv_color_make(200, 160, 50), 0);
+}
+
+static void status_update_cb(lv_timer_t *timer) {
+  update_wifi_status();
+  update_ntp_status();
+}
+
+
+
 static void show_status_screen(void)
 {
   if (overlay_cont) return;
@@ -1589,40 +1646,40 @@ static void show_status_screen(void)
   lv_obj_add_flag(sep, LV_OBJ_FLAG_IGNORE_LAYOUT);
 
   // ── Row 1: WiFi  (y = -28 from mid = ~58px from top) ─────────────────────
-  lv_obj_t *wifi_icon = lv_label_create(overlay_cont);
-  lv_label_set_text(wifi_icon, LV_SYMBOL_WIFI);
-  lv_obj_set_style_text_color(wifi_icon,
+  label_wifi_icon = lv_label_create(overlay_cont);
+  lv_label_set_text(label_wifi_icon, LV_SYMBOL_WIFI);
+  lv_obj_set_style_text_color(label_wifi_icon,
     wifiConnected ? lv_color_make(80, 200, 120) : lv_color_make(200, 80, 80), 0);
-  lv_obj_align(wifi_icon, LV_ALIGN_LEFT_MID, 20, -28);
-  lv_obj_add_flag(wifi_icon, LV_OBJ_FLAG_IGNORE_LAYOUT);
+  lv_obj_align(label_wifi_icon, LV_ALIGN_LEFT_MID, 20, -28);
+  lv_obj_add_flag(label_wifi_icon, LV_OBJ_FLAG_IGNORE_LAYOUT);
 
-  lv_obj_t *wifi_val = lv_label_create(overlay_cont);
+  label_wifi = lv_label_create(overlay_cont);
   if (wifiConnected) {
     char ssid_buf[48];
     snprintf(ssid_buf, sizeof(ssid_buf), "WiFi: %s", WiFi.SSID().c_str());
-    lv_label_set_text(wifi_val, ssid_buf);
-    lv_obj_set_style_text_color(wifi_val, lv_color_make(80, 200, 120), 0);
+    lv_label_set_text(label_wifi, ssid_buf);
+    lv_obj_set_style_text_color(label_wifi, lv_color_make(80, 200, 120), 0);
   } else {
-    lv_label_set_text(wifi_val, "WiFi: disconnected");
-    lv_obj_set_style_text_color(wifi_val, lv_color_make(200, 80, 80), 0);
+    lv_label_set_text(label_wifi, "WiFi: disconnected");
+    lv_obj_set_style_text_color(label_wifi, lv_color_make(200, 80, 80), 0);
   }
-  lv_obj_align(wifi_val, LV_ALIGN_LEFT_MID, 44, -28);
-  lv_obj_add_flag(wifi_val, LV_OBJ_FLAG_IGNORE_LAYOUT);
+  lv_obj_align(label_wifi, LV_ALIGN_LEFT_MID, 44, -28);
+  lv_obj_add_flag(label_wifi, LV_OBJ_FLAG_IGNORE_LAYOUT);
 
   // ── Row 2: NTP  (y = 0 from mid = 86px from top) ─────────────────────────
-  lv_obj_t *ntp_icon = lv_label_create(overlay_cont);
-  lv_label_set_text(ntp_icon, LV_SYMBOL_REFRESH);
-  lv_obj_set_style_text_color(ntp_icon,
+  label_ntp_icon = lv_label_create(overlay_cont);
+  lv_label_set_text(label_ntp_icon, LV_SYMBOL_REFRESH);
+  lv_obj_set_style_text_color(label_ntp_icon,
     timeSynced ? lv_color_make(80, 200, 120) : lv_color_make(200, 160, 50), 0);
-  lv_obj_align(ntp_icon, LV_ALIGN_LEFT_MID, 20, 0);
-  lv_obj_add_flag(ntp_icon, LV_OBJ_FLAG_IGNORE_LAYOUT);
+  lv_obj_align(label_ntp_icon, LV_ALIGN_LEFT_MID, 20, 0);
+  lv_obj_add_flag(label_ntp_icon, LV_OBJ_FLAG_IGNORE_LAYOUT);
 
-  lv_obj_t *ntp_val = lv_label_create(overlay_cont);
-  lv_label_set_text(ntp_val, timeSynced ? "NTP: synced" : "NTP: not synced");
-  lv_obj_set_style_text_color(ntp_val,
+  label_ntp = lv_label_create(overlay_cont);
+  lv_label_set_text(label_ntp, timeSynced ? "NTP: synced" : "NTP: not synced");
+  lv_obj_set_style_text_color(label_ntp,
     timeSynced ? lv_color_make(80, 200, 120) : lv_color_make(200, 160, 50), 0);
-  lv_obj_align(ntp_val, LV_ALIGN_LEFT_MID, 44, 0);
-  lv_obj_add_flag(ntp_val, LV_OBJ_FLAG_IGNORE_LAYOUT);
+  lv_obj_align(label_ntp, LV_ALIGN_LEFT_MID, 44, 0);
+  lv_obj_add_flag(label_ntp, LV_OBJ_FLAG_IGNORE_LAYOUT);
 
   // ── Row 3: Brightness  (y = +28 from mid = ~114px from top) ──────────────
   label_brightness = lv_label_create(overlay_cont);
@@ -1635,6 +1692,10 @@ static void show_status_screen(void)
 
   // Start tilt poll timer — 400 ms, runs while this screen is open
   tilt_timer = lv_timer_create(tilt_poll_cb, 400, nullptr);
+
+  // Start status poll timer
+  status_timer = lv_timer_create(status_update_cb,2000,nullptr);
+  active_overlay = OVERLAY_STATUS;
 
   add_back_hint(overlay_cont);
 }
