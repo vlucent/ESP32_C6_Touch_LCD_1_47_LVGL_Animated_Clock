@@ -40,7 +40,11 @@
 #include <time.h>
 #include <FastIMU.h>
 #include "esp_timer.h"   // hardware microsecond timer for accurate metronome
+#include <BLEDevice.h>
 
+// Service and Characteristic UUIDs of the server to connect to (must match the server code)
+#define SERVICE_UUID "0000ffb0-0000-1000-8000-00805f9b34fb"
+#define BRIGHTNESS_CHARACTERISTIC_UUID "0000ffb1-0000-1000-8000-00805f9b34fb"
 
 
 // ─── Runtime configuration ───────────────────────────────────────────────────
@@ -124,6 +128,11 @@ WiFiMulti wifiMulti;
 bool wifiConnected = false;
 bool timeSynced    = false;
 
+// ─── BLE state ────────────────────────────────────────────────────────
+static boolean doConnect = false;
+static boolean connected = false;
+static BLEAddress *pServerAddress;
+static BLERemoteCharacteristic *pRemoteCharacteristic;
 // ─── UI handles ──────────────────────────────────────────────────────────────
 lv_obj_t   *overlay_cont   = nullptr;
 lv_obj_t   *home_hello_lbl = nullptr;  // "Hello!" splash label
@@ -133,6 +142,7 @@ lv_obj_t   *label_voltage  = nullptr;
 lv_timer_t *battery_timer  = nullptr;
 lv_timer_t *clock_timer    = nullptr;
 lv_timer_t *wifi_timer     = nullptr;
+lv_timer_t *ble_timer      = nullptr;
 lv_obj_t   *home_bell_lbl  = nullptr;  // bell icon shown on home when alarm ON
 lv_obj_t   *home_wifi_lbl  = nullptr;  // wifi icon shown on home when wifi connected
 lv_obj_t   *alarm_cont     = nullptr;  // alarm editor screen
@@ -696,7 +706,7 @@ static void save_config()
     }
     fr.close();
   }
-
+  //10 lines from clock + 7 lines from animation
   File fw = SD.open(path, FILE_WRITE);
   if (!fw) { Serial.println("[CFG] save_config: cannot open for write"); return; }
 
@@ -757,6 +767,126 @@ static void apply_wifi_state()
 }
 
 // ── Bluetooth runtime toggle ───────────────────────────────────────────────────────
+
+
+
+
+
+class MyClientCallbacks : public BLEClientCallbacks {
+  void onConnect(BLEClient *pclient) {}
+
+  void onDisconnect(BLEClient *pclient) {
+    connected = false;
+    Serial.println("onDisconnect: Client Disconnected");
+  }
+};
+
+// Scan callback class, called when a BLE device is discovered
+class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
+  void onResult(BLEAdvertisedDevice advertisedDevice) {
+    // Found a device, check if it contains the service we are looking for.
+    if (advertisedDevice.isAdvertisingService(BLEUUID(SERVICE_UUID))) {
+      Serial.print("Found target server by Service UUID: ");
+      Serial.println(advertisedDevice.getAddress().toString().c_str());
+
+      // Stop scanning
+      advertisedDevice.getScan()->stop();
+
+      // Save the server address and set the connection flag
+      pServerAddress = new BLEAddress(advertisedDevice.getAddress());
+      doConnect = true;
+    }
+  }
+};
+
+// Function to connect to the server
+bool connectToServer(BLEAddress pAddress) {
+  Serial.print("Connecting to ");
+  Serial.println(pAddress.toString().c_str());
+
+  // Create BLE client
+  BLEClient *pClient = BLEDevice::createClient();
+  Serial.println(" - Client created");
+
+  pClient->setClientCallbacks(new MyClientCallbacks());
+
+  // Connect to the remote BLE server
+  if (!pClient->connect(pAddress)) {
+    Serial.println(" - Connection failed");
+    return false;
+  }
+  Serial.println(" - Connected to server");
+
+  // Get the service on the server
+  BLERemoteService *pRemoteService = pClient->getService(SERVICE_UUID);
+  if (pRemoteService == nullptr) {
+    Serial.print("Failed to find service UUID: ");
+    Serial.println(SERVICE_UUID);
+    pClient->disconnect();
+    return false;
+  }
+  Serial.println(" - Service found");
+
+  // Get the characteristic within the service
+  pRemoteCharacteristic = pRemoteService->getCharacteristic(BRIGHTNESS_CHARACTERISTIC_UUID);
+  if (pRemoteCharacteristic == nullptr) {
+    Serial.print("Failed to find characteristic UUID: ");
+    Serial.println(BRIGHTNESS_CHARACTERISTIC_UUID);
+    pClient->disconnect();
+    return false;
+  }
+  Serial.println(" - Characteristic found");
+
+  connected = true;
+  return true;
+}
+
+void ble_setup() {
+  Serial.println("Starting BLE LED Brightness Controller (Client)...");
+
+  // Initialize BLE. When acting as a client, a device name is not mandatory as it only scans and does not advertise itself.
+  BLEDevice::init("");
+
+  // Get the scan object and set its callback
+  BLEScan *pBLEScan = BLEDevice::getScan();
+  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+  pBLEScan->setActiveScan(true);  // Active scanning
+  pBLEScan->start(30, false);     // Start scanning, lasting for 30 seconds
+}
+
+static void ble_loop(lv_timer_t *t) {
+  // If we have received a connect instruction and are not yet connected, attempt to connect
+  // doConnect is true only if scan for specified device was successful
+  Serial.println("HI IM RUNNING FOR SOME REASON");
+  if (doConnect == true) {
+    if (connectToServer(*pServerAddress)) {
+      Serial.println("Successfully connected to the server!");
+      doConnect = false;  // Clear the connection instruction
+    } else {
+      Serial.println("Failed to connect to the server. Rescanning after 3 seconds...");
+      delay(3000);
+      BLEDevice::getScan()->start(5, false);  // Restart scanning for 5 seconds
+    }
+  }
+
+  // If connected, read the pyrometer and send data
+  if (connected) {
+      // int x{ 0xF };
+      uint8_t init[8] ={0xAC,0xFF,0xFE,0x15,0x01,0x00,0xCC,0xE0};
+      // pRemoteCharacteristic->writeValue(&init, 8);
+      // Write the single-byte brightness value to the server's characteristic
+      // pRemoteCharacteristic->writeValue(&brightness, 1);
+  } else {
+    // If disconnected, rescan
+    if (!doConnect) {
+      Serial.println("Disconnected. Rescanning...");
+      BLEDevice::getScan()->start(5, false);
+    }
+  }
+}
+
+
+
 static void apply_ble_state()
 {
   if (cfg.ble_enabled) {
@@ -4078,6 +4208,7 @@ static void home_screen_init(void)
   // ── Background timers ─────────────────────────────────────────────────────
   battery_timer = lv_timer_create(battery_timer_callback, 1000, nullptr);
   wifi_timer    = lv_timer_create(wifi_poll_cb, 5000, nullptr);
+  // ble_timer    = lv_timer_create(ble_loop, 5000, nullptr);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -4260,7 +4391,10 @@ void setup()
   Serial.println("[7b] Applying WiFi state from config...");
   apply_wifi_state();
   Serial.println("     Done.");
-
+  // ── Step 7c: BLE ────────────────────────────────────────────────────────
+  Serial.println("[7C] Setting up BLE");
+  ble_setup();
+  Serial.println("     Done.");
   // ── Step 8: Low-battery gate ─────────────────────────────────────────────
   // Read battery BEFORE building any UI. If critically low, show only the
   // empty-battery icon (no text, no countdown) for 5 s then deep-sleep.
