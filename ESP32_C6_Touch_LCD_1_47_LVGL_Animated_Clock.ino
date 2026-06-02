@@ -40,7 +40,7 @@
 #include <time.h>
 #include <FastIMU.h>
 #include "esp_timer.h"   // hardware microsecond timer for accurate metronome
-
+#include <NimBLEDevice.h>
 
 
 // ─── Runtime configuration ───────────────────────────────────────────────────
@@ -123,6 +123,9 @@ uint32_t  screenHeight;
 WiFiMulti wifiMulti;
 bool wifiConnected = false;
 bool timeSynced    = false;
+// ─── BLE state ────────────────────────────────────────────────────────
+bool bleConnected = false;
+static constexpr uint32_t scanTimeMs = 5 * 1000;
 
 // ─── UI handles ──────────────────────────────────────────────────────────────
 lv_obj_t   *overlay_cont   = nullptr;
@@ -757,6 +760,96 @@ static void apply_wifi_state()
 }
 
 // ── Bluetooth runtime toggle ───────────────────────────────────────────────────────
+//NimBLE_Async_client
+static const char* service_name = "SWAN";
+static const char* service_UUID = "0000ffb0-0000-1000-8000-00805f9b34fb";
+static const char* write_characteristic_UUID = 	"0000ffb1-0000-1000-8000-00805f9b34fb";
+static const char* notify_characteristic_UUID = "0000ffb2-0000-1000-8000-00805f9b34fb";
+static const char* service_init = "ACFFFE150100CCEO";
+static NimBLEClient* pClient = nullptr;
+
+
+class ClientCallbacks : public NimBLEClientCallbacks {
+  void onConnect(NimBLEClient* pClient) override {
+      Serial.printf("Connected to: %s\n", pClient->getPeerAddress().toString().c_str());
+      bleConnected = true;
+  }
+
+  void onDisconnect(NimBLEClient* pClient, int reason) override {
+      Serial.printf("%s Disconnected, reason = %d - Starting scan\n", pClient->getPeerAddress().toString().c_str(), reason);
+      NimBLEDevice::getScan()->start(scanTimeMs);
+  }
+} clientCallbacks;
+
+class ScanCallbacks : public NimBLEScanCallbacks {
+  void onResult(const NimBLEAdvertisedDevice* advertisedDevice) override {
+      Serial.printf("Advertised Device found: %s\n", advertisedDevice->toString().c_str());
+      if (advertisedDevice->haveName() && advertisedDevice->getName() == service_name) {
+          Serial.printf("Found Our Device\n");
+
+          /** Async connections can be made directly in the scan callbacks */
+          auto pClient = NimBLEDevice::getDisconnectedClient();
+          if (!pClient) {
+              pClient = NimBLEDevice::createClient(advertisedDevice->getAddress());
+              if (!pClient) {
+                  Serial.printf("Failed to create client\n");
+                  return;
+              }
+          }
+
+          pClient->setClientCallbacks(&clientCallbacks, false);
+          if (!pClient->connect(true, true, false)) { // delete attributes, async connect, no MTU exchange
+              NimBLEDevice::deleteClient(pClient);
+              Serial.printf("Failed to connect\n");
+              return;
+          }
+      }
+  }
+
+  void onScanEnd(const NimBLEScanResults& results, int reason) override {
+      Serial.printf("Scan Ended\n");
+      NimBLEDevice::getScan()->start(scanTimeMs);
+  }
+} scanCallbacks;
+
+void ble_setup() {
+  Serial.printf("Starting NimBLE Async Client\n");
+  NimBLEDevice::init("Async-Client");
+  NimBLEDevice::setPower(3); /** +3db */
+
+  NimBLEScan* pScan = NimBLEDevice::getScan();
+  pScan->setScanCallbacks(&scanCallbacks);
+  pScan->setInterval(45);
+  pScan->setWindow(45);
+  pScan->setActiveScan(true);
+  pScan->start(scanTimeMs);
+}
+
+//change later to state machine
+void ble_loop() {
+  delay(1000);
+  if (bleConnected) {
+    auto svc = pClient->getService("service_UUID");
+    auto write_chr = svc->getCharacteristic("write_characteristic_UUID");
+
+    if (write_chr && write_chr->canWrite()) {
+      if (write_chr->writeValue("service_init")) {
+        Serial.printf("Wrote new value to: %s\n", write_chr->getUUID().toString().c_str());
+      } else {
+        pClient->disconnect();
+      }
+    }
+  }
+
+  //deleting clients and then scanning? for demo purposes
+  // for (auto& pClient : pClients) {
+  //     Serial.printf("%s\n", pClient->toString().c_str());
+  //     NimBLEDevice::deleteClient(pClient);
+  // }
+
+  // NimBLEDevice::getScan()->start(scanTimeMs);
+}
+
 static void apply_ble_state()
 {
   if (cfg.ble_enabled) {
@@ -4253,13 +4346,15 @@ void setup()
   // ── Step 7: Register SD → LVGL filesystem drive 'S' ──────────────────────
   Serial.println("[7] Registering LVGL SD filesystem driver...");
   lvgl_sd_fs_init();
-  // ── Step 7b: WiFi + NTP ───────────────────────────────────────────────────
   // addAP() queues the credential; actual connection happens in wifi_poll_cb()
   // (an LVGL timer, every 5 s) so setup() is never blocked.
   // configTime() starts the SNTP client; it syncs automatically once online.
   Serial.println("[7b] Applying WiFi state from config...");
   apply_wifi_state();
   Serial.println("     Done.");
+
+  // ── Step 7c: BLE ───────────────────────────────────────────────────
+  ble_setup();
 
   // ── Step 8: Low-battery gate ─────────────────────────────────────────────
   // Read battery BEFORE building any UI. If critically low, show only the
