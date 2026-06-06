@@ -793,12 +793,24 @@ enum class DeviceState {
   READY,
   WAITING_FOR_INIT_ACK,
   WAITING_FOR_SCAN_ACK,
-  STREAMING
+  STREAMING,
+  STOPPING,
+  WAITING_FOR_STOPPED_ACK,
+  STOPPED
 };
 DeviceState deviceState = DeviceState::UNKNOWN;
 
 uint32_t stateTime;
 uint32_t stateTime2;
+uint32_t tryTime;
+bool streaming_announce = false;
+bool ready_announce = false;
+bool waiting_for_init_ack_announce = false;
+bool data_announce = false;
+bool stopped_announce = false;
+bool init_ack = false;
+bool start_ack = false;
+bool stop_ack = false;
 
 class ClientCallbacks : public NimBLEClientCallbacks {
   void onConnect(NimBLEClient* pClient) override {
@@ -855,6 +867,7 @@ void notifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData,
     str             += ", Characteristic = " + pRemoteCharacteristic->getUUID().toString();
     str             += ", Value = " + std::string((char*)pData, length);
     Serial.printf("%s\n", str.c_str());
+    if (!init_ack) init_ack = true;
 }
 
 void ble_setup() {
@@ -913,8 +926,27 @@ bool ble_read(const char* value) {
   return false;
 }
 
-bool streaming_notify = false;
-bool ready_notify = false;
+bool ble_notify() {
+  auto pClient = NimBLEDevice::getClientByHandle(connHandle);
+  if (!pClient) return false;
+  auto svc = pClient->getService(service_UUID);
+  if (!svc) return false;
+  auto pChr2 = svc->getCharacteristic(notify_characteristic_UUID);
+  if (!pChr2) return false;
+  if (pChr2->canNotify()) {
+    if (!pChr2->subscribe(true, notifyCB)) {
+      pClient->disconnect();
+      Serial.printf("subscribe failure\n");
+    } else {
+      Serial.printf("subscribe success\n");
+      return true;
+    }
+  } else {
+    Serial.printf("char can't notify\n");
+  }
+  return false;
+}
+
 
 void ble_loop() {
   // delay(1000);
@@ -928,7 +960,7 @@ void ble_loop() {
       switch(deviceState)
       {
         case DeviceState::DISCOVERING: {
-          Serial.printf("[ble_loop] case: DISCOVERING v11\n");
+          Serial.printf("[ble_loop] case: DISCOVERING v1\n");
           auto pClient = NimBLEDevice::getClientByHandle(connHandle);
           if (!pClient) {
             Serial.printf("[ble_loop] no pClient??\n");
@@ -940,8 +972,7 @@ void ble_loop() {
           }
           Serial.printf("[ble_loop] have pClient\n");
           auto svc = pClient->getService(service_UUID);
-          if (!svc) return;   // discovery still in progress
-          // Serial.printf("[ble_loop] have service");
+          if (!svc) return;
           auto pChr = svc->getCharacteristic(write_characteristic_UUID);
           if (!pChr) return;
           Serial.printf("[ble_loop] have characteristic\n");
@@ -953,83 +984,90 @@ void ble_loop() {
         }
 
         case DeviceState::DISCOVERED: {
-          Serial.printf("[ble_loop] case: DISCOVERED v3\n");
-          // auto pClient = NimBLEDevice::getClientByHandle(connHandle);
-          // if (!pClient) break;
-          // auto svc = pClient->getService(service_UUID);
-          // if (!svc) break;
-          // auto pChr = svc->getCharacteristic(write_characteristic_UUID);
-          // if (!pChr) break;
-          // auto pChr2 = svc->getCharacteristic(notify_characteristic_UUID);
-          // if (!pChr2) break;
-          // if (pChr->canWriteNoResponse()) {
-          //   if (pChr->writeValue(service_init)) {
-          //     Serial.printf("Wrote new value %s to: %s\n", service_init, pChr->getUUID().toString().c_str());
-          //   } else {
-          //     Serial.printf("char write attempt fail?\n");
-          //     break;
-          //   }
-          // } else {
-          //   Serial.printf("char can't write ehh???\n");
-          //   break;
-          // }
-          // if (pChr2->canRead()) {
-          //   Serial.printf("The value of: %s is now: %s\n", pChr2->getUUID().toString().c_str(), pChr2->readValue().c_str());
-          // }
+          Serial.printf("[ble_loop] case: DISCOVERED\n");
+          init_ack = false;
+          ble_notify();
           ble_write(service_init, sizeof(service_init));
+          tryTime = millis();
           deviceState = DeviceState::WAITING_FOR_INIT_ACK;
+          waiting_for_init_ack_announce = false;
           break;
         }
 
         case DeviceState::WAITING_FOR_INIT_ACK: {
-          // break;
-          Serial.printf("[ble_loop] case: WAITING_FOR_INIT_ACK v1\n");
-          auto pClient = NimBLEDevice::getClientByHandle(connHandle);
-          if (!pClient) return;
-          auto svc = pClient->getService(service_UUID);
-          if (!svc) return;
-          auto pChr = svc->getCharacteristic(notify_characteristic_UUID);
-          if (!pChr) return;
-          if (pChr->canRead()) {
-            Serial.printf("The value of: %s is now: %s\n", pChr->getUUID().toString().c_str(), pChr->readValue().c_str());
+          if (!waiting_for_init_ack_announce) {
+            Serial.printf("[ble_loop] case: WAITING_FOR_INIT_ACK\n");
+            waiting_for_init_ack_announce = true;
           }
-          if (pChr->canNotify()) {
-            if (!pChr->subscribe(true, notifyCB)) {
-              pClient->disconnect();
-              Serial.printf("subscribe failure\n");
-            } else {
-              Serial.printf("subscribe success\n");
-              deviceState = DeviceState::READY;
-            }
+          if (init_ack) {
+            deviceState = DeviceState::READY;
           } else {
-            Serial.printf("char can't notify\n");
-          }
-        }
-        deviceState = DeviceState::READY;
-        break;
-
-        case DeviceState::READY: {
-          if (!ready_notify) {
-            Serial.printf("[ble_loop] case: READY v1\n");
-            stateTime = millis();
-            ready_notify = true;
-          }
-          ble_write(start_scan, sizeof(start_scan));
-          if (millis() - stateTime > 3000) {
-            deviceState = DeviceState::STREAMING;
+            if (millis() - tryTime > 3000) {
+              Serial.printf("[ble_loop] retrying init...\n");
+              deviceState = DeviceState::DISCOVERED;
+            }
           }
           break;
         }
+
+        case DeviceState::READY: {
+          Serial.printf("[ble_loop] case: READY\n");
+          init_ack = false;
+          ble_write(start_scan, sizeof(start_scan));
+          tryTime = millis();
+          deviceState = DeviceState::STREAMING;
+          streaming_announce = false;
+          break;
+        }
+
         case DeviceState::STREAMING: {
-          if (!streaming_notify) {
-            streaming_notify = true;
-            Serial.printf("[ble_loop] case: STREAMING v1\n");
+          if (!streaming_announce) {
+            streaming_announce = true;
+            Serial.printf("[ble_loop] case: STREAMING\n");
           }
-          if (millis() - stateTime > 6000) {
-            Serial.println("stopping...");
-            if (ble_write(stop_scan, sizeof(stop_scan))) {
-                deviceState = DeviceState::UNKNOWN;
+          if (init_ack) {
+            if (!data_announce) {
+              data_announce = true;
+              Serial.printf("[ble_loop] data stream confirmed\n");
             }
+          } else {
+            if (millis() - tryTime > 3000) {
+              Serial.printf("[ble_loop] retrying start cmd...\n");
+              deviceState = DeviceState::READY;
+            }
+          }
+
+          //custom stop
+          if (millis() - tryTime > 10000) {
+            deviceState = DeviceState::STOPPING;
+            Serial.println("stopping...");
+          }
+          break;
+        }
+        case DeviceState::STOPPING: {
+          Serial.printf("[ble_loop] case: STOPPING\n");
+          init_ack = false;
+          ble_write(stop_scan, sizeof(stop_scan));
+          deviceState = DeviceState::WAITING_FOR_STOPPED_ACK;
+          tryTime = millis();
+          break;
+        }
+        case DeviceState::WAITING_FOR_STOPPED_ACK: {
+          if (millis() - tryTime > 3000) {
+            Serial.printf("[ble_loop] case: WAITING_FOR_STOPPED_ACK\n");
+            if (init_ack) {
+              deviceState = DeviceState::STOPPING;
+            } else {
+              deviceState = DeviceState::STOPPED;
+            }
+          }
+          
+          break;
+        }
+        case DeviceState::STOPPED: {
+          if (!stopped_announce) {
+            Serial.printf("[ble_loop] case: STOPPED\n");
+            stopped_announce = true;
           }
           break;
         }
