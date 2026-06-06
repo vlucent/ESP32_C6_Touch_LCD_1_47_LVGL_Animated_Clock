@@ -123,10 +123,23 @@ uint32_t  screenHeight;
 WiFiMulti wifiMulti;
 bool wifiConnected = false;
 bool timeSynced    = false;
+enum class WifiState {
+    DISCONNECTED,
+    CONNECTING,
+    CONNECTED
+};
+// WifiState wifiState = WifiState::DISCONNECTED;
+
 // ─── BLE state ────────────────────────────────────────────────────────
 bool bleConnected = false;
 static constexpr uint32_t scanTimeMs = 5 * 1000;
-
+enum class BleState {
+    IDLE,
+    SCANNING,
+    CONNECTING,
+    CONNECTED
+};
+BleState bleState = BleState::IDLE;
 // ─── UI handles ──────────────────────────────────────────────────────────────
 lv_obj_t   *overlay_cont   = nullptr;
 lv_obj_t   *home_hello_lbl = nullptr;  // "Hello!" splash label
@@ -765,14 +778,35 @@ static const char* service_name = "SWAN";
 static const char* service_UUID = "0000ffb0-0000-1000-8000-00805f9b34fb";
 static const char* write_characteristic_UUID = 	"0000ffb1-0000-1000-8000-00805f9b34fb";
 static const char* notify_characteristic_UUID = "0000ffb2-0000-1000-8000-00805f9b34fb";
-static const char* service_init = "ACFFFE150100CCEO";
-static NimBLEClient* pClient = nullptr;
 
+static const uint8_t service_init[] = {0xAC,0xFF,0xFE,0x15,0x01,0x00,0xCC,0xE0};
+static const uint8_t start_scan[] = {0xBC,0x20,0x00,0x04,0x24};
+static const uint8_t stop_scan[] =  {0xBC,0x21,0x00,0x00,0x21};
+static NimBLEClient* pClient = nullptr;
+uint16_t connHandle = 0;
+
+//     IDLE,SCANNING,CONNECTING,CONNECTED
+enum class DeviceState {
+  UNKNOWN,
+  DISCOVERING,
+  DISCOVERED,
+  READY,
+  WAITING_FOR_INIT_ACK,
+  WAITING_FOR_SCAN_ACK,
+  STREAMING
+};
+DeviceState deviceState = DeviceState::UNKNOWN;
+
+uint32_t stateTime;
+uint32_t stateTime2;
 
 class ClientCallbacks : public NimBLEClientCallbacks {
   void onConnect(NimBLEClient* pClient) override {
-      Serial.printf("Connected to: %s\n", pClient->getPeerAddress().toString().c_str());
-      bleConnected = true;
+    Serial.printf("[BLE] Connected to: %s\n", pClient->getPeerAddress().toString().c_str());
+    // bleConnected = true;
+    bleState = BleState::CONNECTED;
+    deviceState = DeviceState::DISCOVERING;
+    connHandle = pClient->getConnHandle();
   }
 
   void onDisconnect(NimBLEClient* pClient, int reason) override {
@@ -812,6 +846,17 @@ class ScanCallbacks : public NimBLEScanCallbacks {
   }
 } scanCallbacks;
 
+/** Notification / Indication receiving handler callback */
+void notifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
+    std::string str  = (isNotify == true) ? "Notification" : "Indication";
+    str             += " from ";
+    str             += pRemoteCharacteristic->getClient()->getPeerAddress().toString();
+    str             += ": Service = " + pRemoteCharacteristic->getRemoteService()->getUUID().toString();
+    str             += ", Characteristic = " + pRemoteCharacteristic->getUUID().toString();
+    str             += ", Value = " + std::string((char*)pData, length);
+    Serial.printf("%s\n", str.c_str());
+}
+
 void ble_setup() {
   Serial.printf("Starting NimBLE Async Client\n");
   NimBLEDevice::init("Async-Client");
@@ -825,22 +870,172 @@ void ble_setup() {
   pScan->start(scanTimeMs);
 }
 
-//change later to state machine
-void ble_loop() {
-  delay(1000);
-  if (bleConnected) {
-    auto svc = pClient->getService("service_UUID");
-    auto write_chr = svc->getCharacteristic("write_characteristic_UUID");
 
-    if (write_chr && write_chr->canWrite()) {
-      if (write_chr->writeValue("service_init")) {
-        Serial.printf("Wrote new value to: %s\n", write_chr->getUUID().toString().c_str());
-      } else {
-        pClient->disconnect();
+bool ble_write(const uint8_t* value, size_t size) {
+  auto pClient = NimBLEDevice::getClientByHandle(connHandle);
+  if (!pClient) return false;
+  auto svc = pClient->getService(service_UUID);
+  if (!svc) return false;
+  auto pChr = svc->getCharacteristic(write_characteristic_UUID);
+  if (!pChr) return false;
+  auto pChr2 = svc->getCharacteristic(notify_characteristic_UUID);
+  if (!pChr2) return false;
+  if (pChr->canWriteNoResponse()) {
+    if (pChr->writeValue(value, size, false)) {
+      Serial.printf("Wrote new value %s to: %s\n", value, pChr->getUUID().toString().c_str());
+    } else {
+      Serial.printf("char write attempt fail?\n");
+      return false;
+    }
+  } else {
+    Serial.printf("char can't write ehh???\n");
+    return false;
+  }
+
+  if (pChr2->canRead()) {
+    Serial.printf("The value of: %s is now: %s\n", pChr2->getUUID().toString().c_str(), pChr2->readValue().c_str());
+  }
+  return true;
+}
+
+bool ble_read(const char* value) {
+  auto pClient = NimBLEDevice::getClientByHandle(connHandle);
+  if (!pClient) return false;
+  auto svc = pClient->getService(service_UUID);
+  if (!svc) return false;
+  auto pChr2 = svc->getCharacteristic(notify_characteristic_UUID);
+  if (!pChr2) return false;
+
+  if (pChr2->canRead()) {
+    Serial.printf("The value of: %s is now: %s\n", pChr2->getUUID().toString().c_str(), pChr2->readValue().c_str());
+    return true;
+  }
+  return false;
+}
+
+bool streaming_notify = false;
+bool ready_notify = false;
+
+void ble_loop() {
+  // delay(1000);
+  // Serial.printf("[ble_loop] entering");
+  switch(bleState)
+  {
+    case BleState::IDLE: break;
+    case BleState::SCANNING: break;
+    case BleState::CONNECTING: break;
+    case BleState::CONNECTED: {
+      switch(deviceState)
+      {
+        case DeviceState::DISCOVERING: {
+          Serial.printf("[ble_loop] case: DISCOVERING v11\n");
+          auto pClient = NimBLEDevice::getClientByHandle(connHandle);
+          if (!pClient) {
+            Serial.printf("[ble_loop] no pClient??\n");
+            return;
+          }
+          if (!pClient->isConnected()) {
+            Serial.printf("[ble_loop] client not connected\n");
+              return;
+          }
+          Serial.printf("[ble_loop] have pClient\n");
+          auto svc = pClient->getService(service_UUID);
+          if (!svc) return;   // discovery still in progress
+          // Serial.printf("[ble_loop] have service");
+          auto pChr = svc->getCharacteristic(write_characteristic_UUID);
+          if (!pChr) return;
+          Serial.printf("[ble_loop] have characteristic\n");
+          if (svc && pChr) {
+            Serial.printf("[ble_loop] discovery complete\n");
+          }
+          deviceState = DeviceState::DISCOVERED;
+          break;
+        }
+
+        case DeviceState::DISCOVERED: {
+          Serial.printf("[ble_loop] case: DISCOVERED v3\n");
+          // auto pClient = NimBLEDevice::getClientByHandle(connHandle);
+          // if (!pClient) break;
+          // auto svc = pClient->getService(service_UUID);
+          // if (!svc) break;
+          // auto pChr = svc->getCharacteristic(write_characteristic_UUID);
+          // if (!pChr) break;
+          // auto pChr2 = svc->getCharacteristic(notify_characteristic_UUID);
+          // if (!pChr2) break;
+          // if (pChr->canWriteNoResponse()) {
+          //   if (pChr->writeValue(service_init)) {
+          //     Serial.printf("Wrote new value %s to: %s\n", service_init, pChr->getUUID().toString().c_str());
+          //   } else {
+          //     Serial.printf("char write attempt fail?\n");
+          //     break;
+          //   }
+          // } else {
+          //   Serial.printf("char can't write ehh???\n");
+          //   break;
+          // }
+          // if (pChr2->canRead()) {
+          //   Serial.printf("The value of: %s is now: %s\n", pChr2->getUUID().toString().c_str(), pChr2->readValue().c_str());
+          // }
+          ble_write(service_init, sizeof(service_init));
+          deviceState = DeviceState::WAITING_FOR_INIT_ACK;
+          break;
+        }
+
+        case DeviceState::WAITING_FOR_INIT_ACK: {
+          // break;
+          Serial.printf("[ble_loop] case: WAITING_FOR_INIT_ACK v1\n");
+          auto pClient = NimBLEDevice::getClientByHandle(connHandle);
+          if (!pClient) return;
+          auto svc = pClient->getService(service_UUID);
+          if (!svc) return;
+          auto pChr = svc->getCharacteristic(notify_characteristic_UUID);
+          if (!pChr) return;
+          if (pChr->canRead()) {
+            Serial.printf("The value of: %s is now: %s\n", pChr->getUUID().toString().c_str(), pChr->readValue().c_str());
+          }
+          if (pChr->canNotify()) {
+            if (!pChr->subscribe(true, notifyCB)) {
+              pClient->disconnect();
+              Serial.printf("subscribe failure\n");
+            } else {
+              Serial.printf("subscribe success\n");
+              deviceState = DeviceState::READY;
+            }
+          } else {
+            Serial.printf("char can't notify\n");
+          }
+        }
+        deviceState = DeviceState::READY;
+        break;
+
+        case DeviceState::READY: {
+          if (!ready_notify) {
+            Serial.printf("[ble_loop] case: READY v1\n");
+            stateTime = millis();
+            ready_notify = true;
+          }
+          ble_write(start_scan, sizeof(start_scan));
+          if (millis() - stateTime > 3000) {
+            deviceState = DeviceState::STREAMING;
+          }
+          break;
+        }
+        case DeviceState::STREAMING: {
+          if (!streaming_notify) {
+            streaming_notify = true;
+            Serial.printf("[ble_loop] case: STREAMING v1\n");
+          }
+          if (millis() - stateTime > 6000) {
+            Serial.println("stopping...");
+            if (ble_write(stop_scan, sizeof(stop_scan))) {
+                deviceState = DeviceState::UNKNOWN;
+            }
+          }
+          break;
+        }
       }
     }
   }
-
   //deleting clients and then scanning? for demo purposes
   // for (auto& pClient : pClients) {
   //     Serial.printf("%s\n", pClient->toString().c_str());
@@ -4404,5 +4599,6 @@ void setup()
 void loop()
 {
   lv_timer_handler();  // drive LVGL: renders, animations, timers
+  ble_loop();
   delay(5);
 }
