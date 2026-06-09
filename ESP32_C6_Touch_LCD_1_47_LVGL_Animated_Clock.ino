@@ -865,8 +865,15 @@ void notifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData,
     str             += pRemoteCharacteristic->getClient()->getPeerAddress().toString();
     str             += ": Service = " + pRemoteCharacteristic->getRemoteService()->getUUID().toString();
     str             += ", Characteristic = " + pRemoteCharacteristic->getUUID().toString();
-    str             += ", Value = " + std::string((char*)pData, length);
+    // str             += ", Value = " + std::string((uint8_t*)pData, length);
     Serial.printf("%s\n", str.c_str());
+
+    Serial.print("RX: ");
+    for (int i = 0; i < length; i++) {
+      Serial.printf("%02X ", pData[i]);
+    }
+    Serial.println();
+
     if (!init_ack) init_ack = true;
 }
 
@@ -960,7 +967,7 @@ void ble_loop() {
       switch(deviceState)
       {
         case DeviceState::DISCOVERING: {
-          Serial.printf("[ble_loop] case: DISCOVERING v1\n");
+          Serial.printf("[ble_loop] case: DISCOVERING v3\n");
           auto pClient = NimBLEDevice::getClientByHandle(connHandle);
           if (!pClient) {
             Serial.printf("[ble_loop] no pClient??\n");
@@ -1074,6 +1081,71 @@ void ble_loop() {
       }
     }
   }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   //deleting clients and then scanning? for demo purposes
   // for (auto& pClient : pClients) {
   //     Serial.printf("%s\n", pClient->toString().c_str());
@@ -1082,6 +1154,97 @@ void ble_loop() {
 
   // NimBLEDevice::getScan()->start(scanTimeMs);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 static void apply_ble_state()
 {
