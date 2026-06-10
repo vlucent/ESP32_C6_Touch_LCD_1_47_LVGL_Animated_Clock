@@ -140,6 +140,18 @@ enum class BleState {
     CONNECTED
 };
 BleState bleState = BleState::IDLE;
+enum class DeviceState {
+  UNKNOWN,
+  DISCOVERING,
+  DISCOVERED,
+  READY,
+  WAITING_FOR_INIT_ACK,
+  WAITING_FOR_SCAN_ACK,
+  STREAMING,
+  STOPPING,
+  WAITING_FOR_STOPPED_ACK,
+  STOPPED
+};
 // ─── UI handles ──────────────────────────────────────────────────────────────
 lv_obj_t   *overlay_cont   = nullptr;
 lv_obj_t   *home_hello_lbl = nullptr;  // "Hello!" splash label
@@ -785,19 +797,6 @@ static const uint8_t stop_scan[] =  {0xBC,0x21,0x00,0x00,0x21};
 static NimBLEClient* pClient = nullptr;
 uint16_t connHandle = 0;
 
-//     IDLE,SCANNING,CONNECTING,CONNECTED
-enum class DeviceState {
-  UNKNOWN,
-  DISCOVERING,
-  DISCOVERED,
-  READY,
-  WAITING_FOR_INIT_ACK,
-  WAITING_FOR_SCAN_ACK,
-  STREAMING,
-  STOPPING,
-  WAITING_FOR_STOPPED_ACK,
-  STOPPED
-};
 DeviceState deviceState = DeviceState::UNKNOWN;
 
 uint32_t stateTime;
@@ -822,8 +821,11 @@ class ClientCallbacks : public NimBLEClientCallbacks {
   }
 
   void onDisconnect(NimBLEClient* pClient, int reason) override {
-      Serial.printf("%s Disconnected, reason = %d - Starting scan\n", pClient->getPeerAddress().toString().c_str(), reason);
+    Serial.printf("[BLE] %s Disconnected, reason = %d\n", pClient->getPeerAddress().toString().c_str(), reason);
+    if (deviceState != DeviceState::STOPPED) {
+      Serial.printf("[BLE] Starting scan\n");
       NimBLEDevice::getScan()->start(scanTimeMs);
+    }
   }
 } clientCallbacks;
 
