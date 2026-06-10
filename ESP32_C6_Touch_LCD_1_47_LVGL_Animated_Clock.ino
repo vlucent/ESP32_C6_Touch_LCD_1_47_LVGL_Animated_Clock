@@ -140,6 +140,36 @@ enum class BleState {
     CONNECTED
 };
 BleState bleState = BleState::IDLE;
+//NimBLE_Async_client
+static const char* service_name = "SWAN";
+static const char* service_UUID = "0000ffb0-0000-1000-8000-00805f9b34fb";
+static const char* write_characteristic_UUID = 	"0000ffb1-0000-1000-8000-00805f9b34fb";
+static const char* notify_characteristic_UUID = "0000ffb2-0000-1000-8000-00805f9b34fb";
+
+static const uint8_t service_init[] = {0xAC,0xFF,0xFE,0x15,0x01,0x00,0xCC,0xE0};
+static const uint8_t start_scan[] = {0xBC,0x20,0x00,0x04,0x24};
+static const uint8_t stop_scan[] =  {0xBC,0x21,0x00,0x00,0x21};
+static NimBLEClient* pClient = nullptr;
+uint16_t connHandle = 0;
+
+enum class DeviceState {
+  UNKNOWN,
+  DISCOVERING,
+  DISCOVERED,
+  READY,
+  WAITING_FOR_INIT_ACK,
+  WAITING_FOR_SCAN_ACK,
+  STREAMING,
+  STOPPING,
+  WAITING_FOR_STOPPED_ACK,
+  STOPPED
+};
+
+DeviceState deviceState = DeviceState::UNKNOWN;
+uint32_t tryTime;
+bool response_received = false;
+
+
 // ─── UI handles ──────────────────────────────────────────────────────────────
 lv_obj_t   *overlay_cont   = nullptr;
 lv_obj_t   *home_hello_lbl = nullptr;  // "Hello!" splash label
@@ -773,40 +803,6 @@ static void apply_wifi_state()
 }
 
 // ── Bluetooth runtime toggle ───────────────────────────────────────────────────────
-//NimBLE_Async_client
-static const char* service_name = "SWAN";
-static const char* service_UUID = "0000ffb0-0000-1000-8000-00805f9b34fb";
-static const char* write_characteristic_UUID = 	"0000ffb1-0000-1000-8000-00805f9b34fb";
-static const char* notify_characteristic_UUID = "0000ffb2-0000-1000-8000-00805f9b34fb";
-
-static const uint8_t service_init[] = {0xAC,0xFF,0xFE,0x15,0x01,0x00,0xCC,0xE0};
-static const uint8_t start_scan[] = {0xBC,0x20,0x00,0x04,0x24};
-static const uint8_t stop_scan[] =  {0xBC,0x21,0x00,0x00,0x21};
-static NimBLEClient* pClient = nullptr;
-uint16_t connHandle = 0;
-
-//     IDLE,SCANNING,CONNECTING,CONNECTED
-enum class DeviceState {
-  UNKNOWN,
-  DISCOVERING,
-  DISCOVERED,
-  READY,
-  WAITING_FOR_INIT_ACK,
-  WAITING_FOR_SCAN_ACK,
-  STREAMING,
-  STOPPING,
-  WAITING_FOR_STOPPED_ACK,
-  STOPPED
-};
-DeviceState deviceState = DeviceState::UNKNOWN;
-
-uint32_t stateTime;
-uint32_t stateTime2;
-uint32_t tryTime;
-bool response_received = false;
-bool start_ack = false;
-bool stop_ack = false;
-
 void setState(DeviceState newState) {
   if (deviceState == newState) {
     return;
@@ -825,8 +821,11 @@ class ClientCallbacks : public NimBLEClientCallbacks {
   }
 
   void onDisconnect(NimBLEClient* pClient, int reason) override {
-      Serial.printf("%s Disconnected, reason = %d - Starting scan\n", pClient->getPeerAddress().toString().c_str(), reason);
+    Serial.printf("[BLE] %s Disconnected, reason = %d\n", pClient->getPeerAddress().toString().c_str(), reason);
+    if (deviceState != DeviceState::STOPPED) {
+      Serial.printf("[BLE] Starting scan\n");
       NimBLEDevice::getScan()->start(scanTimeMs);
+    }
   }
 } clientCallbacks;
 
@@ -892,7 +891,6 @@ void ble_setup() {
   pScan->setActiveScan(true);
   pScan->start(scanTimeMs);
 }
-
 
 bool ble_write(const uint8_t* value, size_t size) {
   auto pClient = NimBLEDevice::getClientByHandle(connHandle);
@@ -1025,11 +1023,9 @@ void ble_loop() {
 
         case DeviceState::STREAMING: {
           if (!response_received && (millis() - tryTime > 3000)) {
-              Serial.printf("[ble_loop] retrying start cmd...\n");
-              setState(DeviceState::READY);
-            }
+            Serial.printf("[ble_loop] retrying start cmd...\n");
+            setState(DeviceState::READY);
           }
-
           //custom stop
           if (millis() - tryTime > 10000) {
             Serial.println("stopping...");
@@ -1037,6 +1033,7 @@ void ble_loop() {
           }
           break;
         }
+
         case DeviceState::STOPPING: {
           ble_write(stop_scan, sizeof(stop_scan));
           setState(DeviceState::WAITING_FOR_STOPPED_ACK);
@@ -1044,6 +1041,7 @@ void ble_loop() {
           tryTime = millis();
           break;
         }
+
         case DeviceState::WAITING_FOR_STOPPED_ACK: {
           if (millis() - tryTime > 3000) {
             if (response_received) {
@@ -1054,77 +1052,13 @@ void ble_loop() {
           }
           break;
         }
+
         case DeviceState::STOPPED: {
           break;
         }
       }
     }
   }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   //deleting clients and then scanning? for demo purposes
   // for (auto& pClient : pClients) {
   //     Serial.printf("%s\n", pClient->toString().c_str());
