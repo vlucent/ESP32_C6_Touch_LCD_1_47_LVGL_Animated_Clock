@@ -152,6 +152,19 @@ static const uint8_t stop_scan[] =  {0xBC,0x21,0x00,0x00,0x21};
 static NimBLEClient* pClient = nullptr;
 uint16_t connHandle = 0;
 
+const char* DeviceStateNames[] {
+  "UNKNOWN",
+  "DISCOVERING",
+  "DISCOVERED",
+  "READY",
+  "WAITING_FOR_INIT_ACK",
+  "WAITING_FOR_SCAN_ACK",
+  "STREAMING",
+  "STOPPING",
+  "WAITING_FOR_STOPPED_ACK",
+  "STOPPED"
+};
+
 enum class DeviceState {
   UNKNOWN,
   DISCOVERING,
@@ -179,8 +192,10 @@ lv_obj_t   *label_voltage  = nullptr;
 lv_timer_t *battery_timer  = nullptr;
 lv_timer_t *clock_timer    = nullptr;
 lv_timer_t *wifi_timer     = nullptr;
+lv_timer_t *ble_timer      = nullptr;
 lv_obj_t   *home_bell_lbl  = nullptr;  // bell icon shown on home when alarm ON
 lv_obj_t   *home_wifi_lbl  = nullptr;  // wifi icon shown on home when wifi connected
+lv_obj_t   *home_ble_lbl   = nullptr;  // ble icon shown on home when wifi connected
 lv_obj_t   *alarm_cont     = nullptr;  // alarm editor screen
 
 enum OverlayType {
@@ -820,7 +835,7 @@ void setState(DeviceState newState) {
     return;
   }
   deviceState = newState;
-  Serial.printf("ENTER: %d\n", newState);
+  Serial.printf("Device State: %s\n", DeviceStateNames[(int)newState]);
 }
 
 class ClientCallbacks : public NimBLEClientCallbacks {
@@ -837,15 +852,18 @@ class ClientCallbacks : public NimBLEClientCallbacks {
     if (deviceState != DeviceState::STOPPED) {
       Serial.printf("[BLE] Starting scan\n");
       NimBLEDevice::getScan()->start(scanTimeMs);
+      bleState = BleState::SCANNING;
+    } else {
+      bleState = BleState::IDLE;
     }
   }
 } clientCallbacks;
 
 class ScanCallbacks : public NimBLEScanCallbacks {
   void onResult(const NimBLEAdvertisedDevice* advertisedDevice) override {
-      Serial.printf("Advertised Device found: %s\n", advertisedDevice->toString().c_str());
+      // Serial.printf("Advertised Device found: %s\n", advertisedDevice->toString().c_str());
       if (advertisedDevice->haveName() && advertisedDevice->getName() == service_name) {
-          Serial.printf("Found Our Device\n");
+          Serial.printf("Found target device: %s\n", advertisedDevice->toString().c_str());
 
           /** Async connections can be made directly in the scan callbacks */
           auto pClient = NimBLEDevice::getDisconnectedClient();
@@ -884,7 +902,7 @@ void notifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData,
 
     Serial.print("RX: ");
     for (int i = 0; i < length; i++) {
-      Serial.printf("%02X ", pData[i]);
+      Serial.printf("%02X", pData[i]);
     }
     Serial.println();
 
@@ -915,13 +933,17 @@ bool ble_write(const uint8_t* value, size_t size) {
   if (!pChr2) return false;
   if (pChr->canWriteNoResponse()) {
     if (pChr->writeValue(value, size, false)) {
-      Serial.printf("Wrote new value %s to: %s\n", value, pChr->getUUID().toString().c_str());
+      Serial.printf("Wrote new value ");
+      for (int i = 0; i < size; i++) {
+        Serial.printf("%02X", value[i]);
+      }
+      Serial.printf(" to: %s\n", pChr->getUUID().toString().c_str());
     } else {
-      Serial.printf("char write attempt fail?\n");
+      Serial.printf("char write attempt fail\n");
       return false;
     }
   } else {
-    Serial.printf("char can't write ehh???\n");
+    Serial.printf("char can't write\n");
     return false;
   }
 
@@ -1040,7 +1062,6 @@ void ble_loop() {
           }
           //custom stop
           if (millis() - tryTime > 10000) {
-            Serial.println("stopping...");
             setState(DeviceState::STOPPING);
           }
           break;
@@ -1482,6 +1503,16 @@ void wifiTask(void *param) {
     }
   }
 }
+
+BleState prevState = BleState::IDLE;
+static void ble_poll_cb(lv_timer_t *t) {
+  if (prevState != bleState) {
+    prevState = bleState;
+    update_home_ble();
+  }
+}
+
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  SCHEDULED ANIMATION  —  every 2 min, configurable duration, 800 ms fade
@@ -2819,6 +2850,16 @@ static void update_home_wifi()
     lv_obj_add_flag(home_wifi_lbl, LV_OBJ_FLAG_HIDDEN);
   }
 }
+static void update_home_ble()
+{
+  if (!home_ble_lbl) return;
+  if (bleState == BleState::CONNECTED) {
+    // lv_label_set_text_fmt(home_ble_lbl, LV_SYMBOL_BLE);
+    lv_obj_clear_flag(home_ble_lbl, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(home_ble_lbl, LV_OBJ_FLAG_HIDDEN);
+  }
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  HOME SCREEN  —  "Hello!" splash → big clock face + 4-zone invisible touch
@@ -2871,6 +2912,14 @@ static void clock_face_show(lv_timer_t *t)
   lv_obj_set_style_text_opa(home_wifi_lbl, LV_OPA_70, 0);
   lv_obj_align(home_wifi_lbl, LV_ALIGN_TOP_RIGHT, -8, 4);
   update_home_wifi();  // set text + hidden state from cfg
+
+  // ── BLE icon (top-right, shown only when ble is enabled) ──────────
+  home_ble_lbl = lv_label_create(lv_scr_act());
+  lv_obj_set_style_text_color(home_ble_lbl, lv_color_make(120,200,255), 0);
+  lv_obj_set_style_text_opa(home_ble_lbl, LV_OPA_70, 0);
+  lv_obj_align(home_ble_lbl, LV_ALIGN_TOP_RIGHT, -32, 4);
+  lv_label_set_text_fmt(home_ble_lbl, LV_SYMBOL_BLUETOOTH);
+  update_home_ble();  // set text + hidden state from cfg
 
   // Show immediately rather than waiting one full second
   clock_tick_cb(nullptr);
@@ -4404,6 +4453,7 @@ static void home_screen_init(void)
   // ── Background timers ─────────────────────────────────────────────────────
   battery_timer = lv_timer_create(battery_timer_callback, 1000, nullptr);
   wifi_timer    = lv_timer_create(wifi_poll_cb, 5000, nullptr);
+  ble_timer    = lv_timer_create(ble_poll_cb, 5000, nullptr);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
