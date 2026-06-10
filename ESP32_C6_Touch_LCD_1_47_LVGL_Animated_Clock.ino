@@ -779,6 +779,17 @@ static void save_config()
 }
 
 // ── WiFi runtime toggle ───────────────────────────────────────────────────────
+static void init_wifi() {
+
+    Serial.println("[WiFi] Setting up...");
+    WiFi.mode(WIFI_STA);
+    wifiMulti.addAP(cfg.wifi_ssid, cfg.wifi_password);
+    // configTzTime sets TZ env var AND starts SNTP in one call.
+    // NTP delivers UTC; localtime_r converts to local using tz_string.
+    configTzTime(cfg.tz_string, cfg.ntp_server);
+    xTaskCreate(wifiTask,"wifi",4096,nullptr,1,nullptr);
+}
+
 static void apply_wifi_state()
 {
   // Apply POSIX TZ immediately — makes localtime_r correct even offline
@@ -788,11 +799,12 @@ static void apply_wifi_state()
 
   if (cfg.wifi_enabled) {
     Serial.println("[WiFi] Enabling...");
-    WiFi.mode(WIFI_STA);
-    wifiMulti.addAP(cfg.wifi_ssid, cfg.wifi_password);
-    // configTzTime sets TZ env var AND starts SNTP in one call.
-    // NTP delivers UTC; localtime_r converts to local using tz_string.
-    configTzTime(cfg.tz_string, cfg.ntp_server);
+    // WiFi.mode(WIFI_STA);
+    // wifiMulti.addAP(cfg.wifi_ssid, cfg.wifi_password);
+    // // configTzTime sets TZ env var AND starts SNTP in one call.
+    // // NTP delivers UTC; localtime_r converts to local using tz_string.
+    // configTzTime(cfg.tz_string, cfg.ntp_server);
+    // xTaskCreate(wifiTask,"wifi",4096,nullptr,1,nullptr);
   } else {
     Serial.println("[WiFi] Disabled by user.");
     WiFi.disconnect(true);
@@ -1438,7 +1450,7 @@ static void wifi_poll_cb(lv_timer_t *t)
   } else {
     if (!wifiDisconnected_announced) {
       update_home_wifi();  // should we make it so that it only runs once?
-      wifiDisconnected_announced = true; 
+      wifiDisconnected_announced = true;
     }
     wifiConnected = false;
     timeSynced    = false;
@@ -1448,11 +1460,26 @@ static void wifi_poll_cb(lv_timer_t *t)
     // Only attempt reconnect when no modal/editor is open, and slow
     // down to every 30s so the stall is infrequent.
     // allows wifi to connect with status screen overlay active
-    if (!modal_cont && (!overlay_cont || active_overlay == OVERLAY_STATUS) && !apps_cont && cfg.wifi_enabled) {
-      Serial.printf("[WiFi] Attempting to connect...\n");
-      wifiMulti.run(0);
+    // if (!modal_cont && (!overlay_cont || active_overlay == OVERLAY_STATUS) && !apps_cont && cfg.wifi_enabled) {
+    //   Serial.printf("[WiFi] Attempting to connect...\n");
+    //   wifiMulti.run(0);
+    // }
+    // lv_timer_set_period(t, 30000);  // 30s between reconnect attempts
+  }
+}
+
+void wifiTask(void *param) {
+  while (true) {
+    wl_status_t wst = WiFi.status();  // instant read, never blocks
+    if (cfg.wifi_enabled) {
+      if (wst != WL_CONNECTED) {
+        Serial.printf("[WiFi] Attempting to connect...\n");
+        wifiMulti.run(0);
+        vTaskDelay(pdMS_TO_TICKS(30000)); // critical
+      } else {
+        vTaskDelay(pdMS_TO_TICKS(5000)); // critical
+      }
     }
-    lv_timer_set_period(t, 30000);  // 30s between reconnect attempts
   }
 }
 
@@ -2183,19 +2210,13 @@ static lv_obj_t *se_zone(lv_obj_t *p,int x,int y,int w,int h,lv_event_cb_t cb, l
   lv_obj_set_style_border_width(z,0,0); lv_obj_set_style_pad_all(z,0,0);
   lv_obj_set_style_radius(z,0,0); lv_obj_set_style_shadow_width(z,0,0);
   lv_obj_clear_flag(z,LV_OBJ_FLAG_SCROLLABLE);
-  // lv_obj_add_event_cb(z,cb,LV_EVENT_PRESSED,nullptr);
-  // lv_obj_add_event_cb(z,cb,LV_EVENT_SHORT_CLICKED,nullptr);
   lv_obj_add_event_cb(z,cb,trigger,nullptr);
   lv_obj_add_event_cb(z,modal_longpress_cb,LV_EVENT_LONG_PRESSED,nullptr);
   return z;
 }
 
 // ── Value edit callbacks ───────────────────────────────────────────────────────
-// static void se_h_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_hour=(edit_hour+1)%24;se_refresh();}}
-// static void se_h_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_hour=(edit_hour+23)%24;se_refresh();}}
-// static void se_m_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_min=(edit_min+1)%60;se_refresh();}}
-// static void se_m_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_min=(edit_min+59)%60;se_refresh();}}
-// static void se_tog(lv_event_t*e) {if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_enabled=!edit_enabled;se_refresh();}}
+
 static void se_h_up(lv_event_t*e){edit_hour=(edit_hour+1)%24;se_refresh();}
 static void se_h_dn(lv_event_t*e){edit_hour=(edit_hour+23)%24;se_refresh();}
 static void se_m_up(lv_event_t*e){edit_min=(edit_min+1)%60;se_refresh();}
@@ -2211,12 +2232,6 @@ static int days_in_month(int m, int y)
   if (m==2 && ((y%4==0&&y%100!=0)||(y%400==0))) return 29;
   return dim[m-1];
 }
-// static void se_day_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){int d=days_in_month(edit_month,edit_year);edit_day=edit_day%d+1;se_refresh();}}
-// static void se_day_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){int d=days_in_month(edit_month,edit_year);edit_day=(edit_day-2+d)%d+1;se_refresh();}}
-// static void se_mon_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_month=edit_month%12+1;int d=days_in_month(edit_month,edit_year);if(edit_day>d)edit_day=d;se_refresh();}}
-// static void se_mon_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_month=(edit_month-2+12)%12+1;int d=days_in_month(edit_month,edit_year);if(edit_day>d)edit_day=d;se_refresh();}}
-// static void se_yr_up(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){edit_year++;se_refresh();}}
-// static void se_yr_dn(lv_event_t*e){if(lv_event_get_code(e)==LV_EVENT_PRESSED){if(edit_year>2026)edit_year--;se_refresh();}}
 static void se_day_up(lv_event_t*e){int d=days_in_month(edit_month,edit_year);edit_day=edit_day%d+1;se_refresh();}
 static void se_day_dn(lv_event_t*e){int d=days_in_month(edit_month,edit_year);edit_day=(edit_day-2+d)%d+1;se_refresh();}
 static void se_mon_up(lv_event_t*e){edit_month=edit_month%12+1;int d=days_in_month(edit_month,edit_year);if(edit_day>d)edit_day=d;se_refresh();}
@@ -4568,6 +4583,7 @@ void setup()
   // (an LVGL timer, every 5 s) so setup() is never blocked.
   // configTime() starts the SNTP client; it syncs automatically once online.
   Serial.println("[7b] Applying WiFi state from config...");
+  init_wifi();
   apply_wifi_state();
   Serial.println("     Done.");
 
