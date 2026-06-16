@@ -145,6 +145,7 @@ enum class BleState {
 BleState bleState = BleState::IDLE;
 //NimBLE_Async_client
 // static const char* address = "02:b3:ec:c3:6c:9c";
+std::string mac_addr = "02:b3:ec:c3:6c:9c";
 static const char* service_name = "SWAN";
 static const char* service_UUID = "0000ffb0-0000-1000-8000-00805f9b34fb";
 static const char* write_characteristic_UUID = 	"0000ffb1-0000-1000-8000-00805f9b34fb";
@@ -945,17 +946,20 @@ void notifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData,
 }
 
 bool connect(NimBLEClient* pClient, NimBLEAddress bleAddress, bool deleteAttr) {
-    for (int i = 0; i < 5; i++) {
-        Serial.printf("Connect attempt: %d\n", i); 
-        if (pClient->connect(bleAddress,deleteAttr)) {
-            Serial.printf("[BLE] connection success\n");
-            // optional but important: ensure stack is ready
-            pClient->discoverAttributes();
-            // NOW request connection parameter update
-            pClient->setConnectionParams(12, 12, 0, 150);
-            return true;
-        }
-      delay(1000);
+  if (pClient && pClient->isConnected()) {
+      pClient->disconnect();
+  }
+  for (int i = 0; i < 5; i++) {
+      Serial.printf("Connect attempt: %d\n", i); 
+      if (pClient->connect(bleAddress,deleteAttr)) {
+          Serial.printf("[BLE] connection success\n");
+          // optional but important: ensure stack is ready
+          pClient->discoverAttributes();
+          // NOW request connection parameter update
+          pClient->setConnectionParams(12, 12, 0, 150);
+          return true;
+      }
+    delay(1000);
   }
   Serial.printf("Failed to connect to %s after 5 attempts, deleting client\n", bleAddress.toString().c_str());
   NimBLEDevice::deleteClient(pClient); 
@@ -973,10 +977,9 @@ void ble_setup() {
     return;
   }
   pClient->setClientCallbacks(&clientCallbacks, false);
-  std::string addr = "02:b3:ec:c3:6c:9c";
-  NimBLEAddress bleAddress(addr, BLE_ADDR_PUBLIC);
+  NimBLEAddress bleAddress(mac_addr, BLE_ADDR_PUBLIC);
   if (!connect(pClient, bleAddress, true)) {
-    Serial.printf("Failed to connect to %s after 5 attempts\n", addr.c_str());
+    Serial.printf("Failed to connect to %s after 5 attempts\n", mac_addr.c_str());
     bleState = BleState::IDLE;
   } else {
     bleState = BleState::CONNECTED;
@@ -1098,8 +1101,28 @@ void ble_loop() {
     } 
     case BleState::CONNECTING: {
       Serial.printf("[BLE] (Re)Connecting\n");
-      auto pClient = NimBLEDevice::getClientByHandle(connHandle);
+      NimBLEClient* pClient = nullptr;
+      NimBLEAddress bleAddress(mac_addr,BLE_ADDR_PUBLIC);
+      /** Check if we have a client we should reuse first **/
+      if (NimBLEDevice::getCreatedClientCount()) {
+          pClient = NimBLEDevice::getClientByPeerAddress(bleAddress);
+          if (pClient) {
+              Serial.println("trying existing client");
+              connect(pClient,bleAddress,false);
+          } else {
+              Serial.println("trying disconnected client");
+              pClient = NimBLEDevice::getDisconnectedClient();
+              if (pClient) {
+                  connect(pClient,bleAddress,false);
+              }
+          }
+      }
       if (!pClient) {
+        if (NimBLEDevice::getCreatedClientCount() >= MYNEWT_VAL(BLE_MAX_CONNECTIONS)) {
+          Serial.printf("Max clients reached - no more connections available\n");
+          bleState = BleState::IDLE;
+          break;;
+        }
         Serial.printf("[BLE] no pClient boo\n");
         pClient = NimBLEDevice::createClient();
         Serial.printf("New client created\n");
@@ -1107,13 +1130,12 @@ void ble_loop() {
         pClient->setConnectionParams(12, 12, 0, 150);
         pClient->setConnectTimeout(5 * 1000);
       }
-      std::string addr = "02:b3:ec:c3:6c:9c";
-      NimBLEAddress bleAddress(addr, BLE_ADDR_PUBLIC);
       Serial.printf("[BLE] attempting connect\n");
       if (!connect(pClient, bleAddress, true)) {
-        Serial.printf("Failed to connect to %s after 5 attempts\n", addr.c_str());
+        Serial.printf("Failed to connect to %s after 5 attempts\n", mac_addr.c_str());
         bleState = BleState::IDLE;
       } else {
+        Serial.printf("Connected to: %s RSSI: %d\n", pClient->getPeerAddress().toString().c_str(), pClient->getRssi());
         bleState = BleState::CONNECTED;
       }
       break;
