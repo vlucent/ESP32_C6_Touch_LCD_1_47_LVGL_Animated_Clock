@@ -132,15 +132,19 @@ enum class WifiState {
 
 // ─── BLE state ────────────────────────────────────────────────────────
 bool bleConnected = false;
-static constexpr uint32_t scanTimeMs = 5 * 1000;
+static constexpr uint32_t scanTimeMs = 10 * 1000;
 enum class BleState {
     IDLE,
     SCANNING,
     CONNECTING,
-    CONNECTED
+    CONNECTED,
+    DISABLING,
+    OFF
 };
+
 BleState bleState = BleState::IDLE;
 //NimBLE_Async_client
+// static const char* address = "02:b3:ec:c3:6c:9c";
 static const char* service_name = "SWAN";
 static const char* service_UUID = "0000ffb0-0000-1000-8000-00805f9b34fb";
 static const char* write_characteristic_UUID = 	"0000ffb1-0000-1000-8000-00805f9b34fb";
@@ -151,6 +155,7 @@ static const uint8_t start_scan[] = {0xBC,0x20,0x00,0x04,0x24};
 static const uint8_t stop_scan[] =  {0xBC,0x21,0x00,0x00,0x21};
 static NimBLEClient* pClient = nullptr;
 uint16_t connHandle = 0;
+bool havePeer = false;
 
 const char* DeviceStateNames[] {
   "UNKNOWN",
@@ -180,19 +185,46 @@ enum class DeviceState {
 
 DeviceState deviceState = DeviceState::UNKNOWN;
 uint32_t tryTime;
+uint32_t bleConnectionTime;
 bool response_received = false;
+bool hasSavedAddr = false;
+NimBLEAddress savedAddr;
+bool bleEnablePress = false;
+bool bleDisablePress = false;
+uint32_t blePressTime;
+bool bleBusy = false;
+uint8_t* bleRawData;
+float ctemp;
+float ftemp;
 
 
+void print_ble_raw_data(uint8_t* pData, size_t length) {
+    Serial.print("RX: ");
+    for (int i = 0; i < length; i++) {
+      Serial.printf("%02X", pData[i]);
+    }
+}
+
+void read_curr_temp() {
+    uint16_t temp = 0;
+    if (bleRawData) {
+        temp = bleRawData[5] << 8 | bleRawData[4];
+        ctemp = static_cast<float>(temp) / 10.0f;
+        ftemp = (ctemp * 1.8f) + 32;
+    }
+}
 // ─── UI handles ──────────────────────────────────────────────────────────────
 lv_obj_t   *overlay_cont   = nullptr;
 lv_obj_t   *home_hello_lbl = nullptr;  // "Hello!" splash label
 lv_obj_t   *home_time_lbl  = nullptr;  // HH:mm clock label on home screen
+lv_obj_t   *home_temp_lbl  = nullptr;  // HH:mm clock label on home screen
 lv_obj_t   *label_adc_raw  = nullptr;
 lv_obj_t   *label_voltage  = nullptr;
 lv_timer_t *battery_timer  = nullptr;
 lv_timer_t *clock_timer    = nullptr;
 lv_timer_t *wifi_timer     = nullptr;
 lv_timer_t *ble_timer      = nullptr;
+lv_timer_t *temp_timer      = nullptr;
 lv_obj_t   *home_bell_lbl  = nullptr;  // bell icon shown on home when alarm ON
 lv_obj_t   *home_wifi_lbl  = nullptr;  // wifi icon shown on home when wifi connected
 lv_obj_t   *home_ble_lbl   = nullptr;  // ble icon shown on home when wifi connected
@@ -794,6 +826,21 @@ static void save_config()
 }
 
 // ── WiFi runtime toggle ───────────────────────────────────────────────────────
+void wifiTask(void *param) {
+  while (true) {
+    wl_status_t wst = WiFi.status();  // instant read, never blocks
+    if (cfg.wifi_enabled) {
+      if (wst != WL_CONNECTED) {
+        Serial.printf("[WiFi] Attempting to connect...\n");
+        wifiMulti.run(0);
+        vTaskDelay(pdMS_TO_TICKS(30000)); // critical
+      } else {
+        vTaskDelay(pdMS_TO_TICKS(5000)); // critical
+      }
+    }
+  }
+}
+
 static void init_wifi() {
 
     Serial.println("[WiFi] Setting up...");
@@ -841,54 +888,39 @@ void setState(DeviceState newState) {
 class ClientCallbacks : public NimBLEClientCallbacks {
   void onConnect(NimBLEClient* pClient) override {
     Serial.printf("[BLE] Connected to: %s\n", pClient->getPeerAddress().toString().c_str());
+    Serial.printf("[BLE] deviceState: %s\n", DeviceStateNames[(int) deviceState]);
     // bleConnected = true;
     bleState = BleState::CONNECTED;
-    setState(DeviceState::DISCOVERING);
+    if (deviceState != DeviceState::STREAMING) {
+      setState(DeviceState::DISCOVERING);
+    }
+    bleConnected = true;
+    bleConnectionTime = millis();
     connHandle = pClient->getConnHandle();
+    havePeer = true;
+    pClient->updateConnParams(
+    24, 24,   // 30 ms
+    0,        // latency
+    600       // 6 s timeout
+    );
   }
 
   void onDisconnect(NimBLEClient* pClient, int reason) override {
     Serial.printf("[BLE] %s Disconnected, reason = %d\n", pClient->getPeerAddress().toString().c_str(), reason);
-    if (deviceState != DeviceState::STOPPED) {
-      Serial.printf("[BLE] Starting scan\n");
-      NimBLEDevice::getScan()->start(scanTimeMs);
-      bleState = BleState::SCANNING;
-    } else {
+    // bool recovered = false;
+
+    if (bleConnected) {
+      uint32_t bleDuration = (millis() - bleConnectionTime) / 1000;
+      Serial.printf("[BLE] connection duration: %lu seconds\n", bleDuration);
+      bleConnected = false;
+    }
+
+    if (deviceState == DeviceState::STOPPED) {
       bleState = BleState::IDLE;
+      return;
     }
   }
 } clientCallbacks;
-
-class ScanCallbacks : public NimBLEScanCallbacks {
-  void onResult(const NimBLEAdvertisedDevice* advertisedDevice) override {
-      // Serial.printf("Advertised Device found: %s\n", advertisedDevice->toString().c_str());
-      if (advertisedDevice->haveName() && advertisedDevice->getName() == service_name) {
-          Serial.printf("Found target device: %s\n", advertisedDevice->toString().c_str());
-
-          /** Async connections can be made directly in the scan callbacks */
-          auto pClient = NimBLEDevice::getDisconnectedClient();
-          if (!pClient) {
-              pClient = NimBLEDevice::createClient(advertisedDevice->getAddress());
-              if (!pClient) {
-                  Serial.printf("Failed to create client\n");
-                  return;
-              }
-          }
-
-          pClient->setClientCallbacks(&clientCallbacks, false);
-          if (!pClient->connect(true, true, false)) { // delete attributes, async connect, no MTU exchange
-              NimBLEDevice::deleteClient(pClient);
-              Serial.printf("Failed to connect\n");
-              return;
-          }
-      }
-  }
-
-  void onScanEnd(const NimBLEScanResults& results, int reason) override {
-      Serial.printf("Scan Ended\n");
-      NimBLEDevice::getScan()->start(scanTimeMs);
-  }
-} scanCallbacks;
 
 /** Notification / Indication receiving handler callback */
 void notifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
@@ -898,29 +930,60 @@ void notifyCB(NimBLERemoteCharacteristic* pRemoteCharacteristic, uint8_t* pData,
     str             += ": Service = " + pRemoteCharacteristic->getRemoteService()->getUUID().toString();
     str             += ", Characteristic = " + pRemoteCharacteristic->getUUID().toString();
     // str             += ", Value = " + std::string((uint8_t*)pData, length);
-    Serial.printf("%s\n", str.c_str());
+    Serial.printf("%s ", str.c_str());
 
-    Serial.print("RX: ");
-    for (int i = 0; i < length; i++) {
-      Serial.printf("%02X", pData[i]);
-    }
+    print_ble_raw_data(pData, length);
+    // Serial.print("RX: ");
+    // for (int i = 0; i < length; i++) {
+    //   Serial.printf("%02X", pData[i]);
+    // }
     Serial.println();
-
+    bleRawData = pData;
+    read_curr_temp();
+    bleRawData = pData;
     response_received = true;
+}
+
+bool connect(NimBLEClient* pClient, NimBLEAddress bleAddress, bool deleteAttr) {
+    for (int i = 0; i < 5; i++) {
+        Serial.printf("Connect attempt: %d\n", i); 
+        if (pClient->connect(bleAddress,deleteAttr)) {
+            Serial.printf("[BLE] connection success\n");
+            // optional but important: ensure stack is ready
+            pClient->discoverAttributes();
+            // NOW request connection parameter update
+            pClient->setConnectionParams(12, 12, 0, 150);
+            return true;
+        }
+      delay(1000);
+  }
+  Serial.printf("Failed to connect to %s after 5 attempts, deleting client\n", bleAddress.toString().c_str());
+  NimBLEDevice::deleteClient(pClient); 
+  return false;
 }
 
 void ble_setup() {
   Serial.printf("Starting NimBLE Async Client\n");
-  NimBLEDevice::init("Async-Client");
-  NimBLEDevice::setPower(3); /** +3db */
 
-  NimBLEScan* pScan = NimBLEDevice::getScan();
-  pScan->setScanCallbacks(&scanCallbacks);
-  pScan->setInterval(45);
-  pScan->setWindow(45);
-  pScan->setActiveScan(true);
-  pScan->start(scanTimeMs);
+  NimBLEDevice::init("");
+  NimBLEDevice::setPower(3); /** +3db */
+  pClient = NimBLEDevice::createClient();
+  if (!pClient) {
+    Serial.println("Failed to create BLE client");
+    return;
+  }
+  pClient->setClientCallbacks(&clientCallbacks, false);
+  std::string addr = "02:b3:ec:c3:6c:9c";
+  NimBLEAddress bleAddress(addr, BLE_ADDR_PUBLIC);
+  if (!connect(pClient, bleAddress, true)) {
+    Serial.printf("Failed to connect to %s after 5 attempts\n", addr.c_str());
+    bleState = BleState::IDLE;
+  } else {
+    bleState = BleState::CONNECTED;
+  }
 }
+
+
 
 bool ble_write(const uint8_t* value, size_t size) {
   auto pClient = NimBLEDevice::getClientByHandle(connHandle);
@@ -947,9 +1010,9 @@ bool ble_write(const uint8_t* value, size_t size) {
     return false;
   }
 
-  if (pChr2->canRead()) {
-    Serial.printf("The value of: %s is now: %s\n", pChr2->getUUID().toString().c_str(), pChr2->readValue().c_str());
-  }
+  // if (pChr2->canRead()) {
+  //   Serial.printf("The value of: %s is now: %s\n", pChr2->getUUID().toString().c_str(), pChr2->readValue().c_str());
+  // }
   return true;
 }
 
@@ -993,16 +1056,73 @@ bool ble_notify() {
 void ble_loop() {
   // delay(1000);
   // Serial.printf("[ble_loop] entering");
+
+
   switch(bleState)
   {
+    case BleState::DISABLING: {
+      switch(deviceState){
+
+        case DeviceState::STOPPING: {
+          ble_write(stop_scan, sizeof(stop_scan));
+          setState(DeviceState::WAITING_FOR_STOPPED_ACK);
+          response_received = false;
+          tryTime = millis();
+          break;
+        }
+        case DeviceState::WAITING_FOR_STOPPED_ACK: {
+          if (millis() - tryTime > 5000) {
+            if (response_received) {
+              setState(DeviceState::STOPPING);
+            } else {
+              setState(DeviceState::STOPPED);
+            }
+          }
+          break;
+        }
+        case DeviceState::STOPPED: {
+          auto pClient = NimBLEDevice::getClientByHandle(connHandle);
+          pClient->disconnect();
+          bleBusy = false;
+          bleState = BleState::OFF;
+
+          break;
+        }
+      }
+      break;
+    }
+    case BleState::OFF: break;
     case BleState::IDLE: break;
-    case BleState::SCANNING: break;
-    case BleState::CONNECTING: break;
+    case BleState::SCANNING: {
+      break;
+    } 
+    case BleState::CONNECTING: {
+      Serial.printf("[BLE] (Re)Connecting\n");
+      auto pClient = NimBLEDevice::getClientByHandle(connHandle);
+      if (!pClient) {
+        Serial.printf("[BLE] no pClient boo\n");
+        pClient = NimBLEDevice::createClient();
+        Serial.printf("New client created\n");
+        pClient->setClientCallbacks(&clientCallbacks, false);
+        pClient->setConnectionParams(12, 12, 0, 150);
+        pClient->setConnectTimeout(5 * 1000);
+      }
+      std::string addr = "02:b3:ec:c3:6c:9c";
+      NimBLEAddress bleAddress(addr, BLE_ADDR_PUBLIC);
+      Serial.printf("[BLE] attempting connect\n");
+      if (!connect(pClient, bleAddress, true)) {
+        Serial.printf("Failed to connect to %s after 5 attempts\n", addr.c_str());
+        bleState = BleState::IDLE;
+      } else {
+        bleState = BleState::CONNECTED;
+      }
+      break;
+    }
     case BleState::CONNECTED: {
       switch(deviceState)
       {
         case DeviceState::DISCOVERING: {
-          Serial.printf("[ble_loop] case: DISCOVERING v3\n");
+          // Serial.printf("[ble_loop] case: DISCOVERING v3\n");
           setState(DeviceState::DISCOVERING);
           auto pClient = NimBLEDevice::getClientByHandle(connHandle);
           if (!pClient) {
@@ -1037,9 +1157,10 @@ void ble_loop() {
 
         case DeviceState::WAITING_FOR_INIT_ACK: {
           if (response_received) {
+            tryTime = millis();
             setState(DeviceState::READY);
           } else {
-            if (millis() - tryTime > 3000) {
+            if (millis() - tryTime > 9000) {
               Serial.printf("[ble_loop] retrying init...\n");
               setState(DeviceState::DISCOVERED);
             }
@@ -1048,67 +1169,46 @@ void ble_loop() {
         }
 
         case DeviceState::READY: {
-          ble_write(start_scan, sizeof(start_scan));
-          response_received = false;
-          tryTime = millis();
-          setState(DeviceState::STREAMING);
+          // ble_write(start_scan, sizeof(start_scan));
+          if ((millis() - tryTime) > 1000) {
+            ble_write(start_scan, sizeof(start_scan));
+            tryTime = millis();
+            response_received = false;
+            setState(DeviceState::STREAMING);
+          }
           break;
         }
 
         case DeviceState::STREAMING: {
-          if (!response_received && (millis() - tryTime > 3000)) {
+          if ((millis() - tryTime > 3000) && !response_received && (millis() - tryTime > 9000)) {
             Serial.printf("[ble_loop] retrying start cmd...\n");
             setState(DeviceState::READY);
           }
           //custom stop
-          if (millis() - tryTime > 10000) {
-            setState(DeviceState::STOPPING);
-          }
+          // if (millis() - tryTime > 10000) {
+          //   setState(DeviceState::STOPPING);
+          // }
           break;
         }
 
-        case DeviceState::STOPPING: {
-          ble_write(stop_scan, sizeof(stop_scan));
-          setState(DeviceState::WAITING_FOR_STOPPED_ACK);
-          response_received = false;
-          tryTime = millis();
-          break;
-        }
-
-        case DeviceState::WAITING_FOR_STOPPED_ACK: {
-          if (millis() - tryTime > 3000) {
-            if (response_received) {
-              setState(DeviceState::STOPPING);
-            } else {
-              setState(DeviceState::STOPPED);
-            }
-          }
-          break;
-        }
-
-        case DeviceState::STOPPED: {
-          break;
-        }
       }
     }
   }
-  //deleting clients and then scanning? for demo purposes
-  // for (auto& pClient : pClients) {
-  //     Serial.printf("%s\n", pClient->toString().c_str());
-  //     NimBLEDevice::deleteClient(pClient);
-  // }
-
-  // NimBLEDevice::getScan()->start(scanTimeMs);
 }
 
 static void apply_ble_state()
 {
+  bleBusy = true;
   if (cfg.ble_enabled) {
-    Serial.println("[BLE] Enabling...");
-    // and try to...connect to the IR thermometer?
+    Serial.println("[BLE] Re-enabled by user");
+    bleState = BleState::CONNECTING;
+    bleBusy = false;
   } else {
-    Serial.println("[BLE] Disabled by user.");
-    // um yeah, totally disabled man
+    Serial.println("[BLE] Disabled by user");
+    // ble_stop();
+    bleState = BleState::DISABLING;
+    setState(DeviceState::STOPPING);
+    // bleBusy = false;
   }
 }
 
@@ -1489,20 +1589,7 @@ static void wifi_poll_cb(lv_timer_t *t)
   }
 }
 
-void wifiTask(void *param) {
-  while (true) {
-    wl_status_t wst = WiFi.status();  // instant read, never blocks
-    if (cfg.wifi_enabled) {
-      if (wst != WL_CONNECTED) {
-        Serial.printf("[WiFi] Attempting to connect...\n");
-        wifiMulti.run(0);
-        vTaskDelay(pdMS_TO_TICKS(30000)); // critical
-      } else {
-        vTaskDelay(pdMS_TO_TICKS(5000)); // critical
-      }
-    }
-  }
-}
+
 
 BleState prevState = BleState::IDLE;
 static void ble_poll_cb(lv_timer_t *t) {
@@ -1510,6 +1597,11 @@ static void ble_poll_cb(lv_timer_t *t) {
     prevState = bleState;
     update_home_ble();
   }
+}
+
+DeviceState prevDeviceState = DeviceState::UNKNOWN;
+static void temp_poll_cb(lv_timer_t *t) {
+  update_home_temp();
 }
 
 
@@ -2671,9 +2763,12 @@ static void carousel_tap_cb(lv_event_t *e)
       apply_wifi_state(); save_config();
       carousel_build(); break;
     case 4: // Bluetooth
-      cfg.ble_enabled=!cfg.ble_enabled;
-      apply_ble_state();
-      carousel_build(); break;
+      if (!bleBusy) {
+        cfg.ble_enabled=!cfg.ble_enabled;
+        apply_ble_state();
+        carousel_build(); 
+      }
+      break;
   }
 }
 
@@ -2861,6 +2956,26 @@ static void update_home_ble()
   }
 }
 
+static void update_home_temp()
+{
+  if (!home_temp_lbl) return;
+
+  lv_label_set_text_fmt(home_temp_lbl, "%.1f F", ftemp);
+  // lv_label_set_text_fmt(home_temp_lbl, "TEST");
+
+  if (prevDeviceState != deviceState) {
+    prevDeviceState = deviceState;
+    if (deviceState== DeviceState::STREAMING) {
+      // lv_label_set_text_fmt(home_ble_lbl, LV_SYMBOL_BLE);
+      lv_obj_add_flag(home_time_lbl, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_clear_flag(home_temp_lbl, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(home_temp_lbl, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_clear_flag(home_time_lbl, LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 //  HOME SCREEN  —  "Hello!" splash → big clock face + 4-zone invisible touch
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2890,6 +3005,16 @@ static void clock_face_show(lv_timer_t *t)
   lv_obj_set_style_text_color(home_time_lbl, lv_color_white(), 0);
   lv_obj_set_style_text_letter_space(home_time_lbl, 4, 0);
   lv_obj_align(home_time_lbl, LV_ALIGN_CENTER, 0, 0);
+
+// Temperature Display
+  home_temp_lbl = lv_label_create(lv_scr_act());
+  lv_label_set_text(home_temp_lbl, "--.- F");
+  lv_obj_set_style_text_font(home_temp_lbl, &montserrat_96, 0);
+  // lv_obj_set_style_text_font(home_temp_lbl, &lv_font_montserrat_48, 0);
+  lv_obj_set_style_text_color(home_temp_lbl, lv_color_white(), 0);
+  lv_obj_set_style_text_letter_space(home_temp_lbl, 4, 0);
+  lv_obj_align(home_temp_lbl, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_add_flag(home_temp_lbl,LV_OBJ_FLAG_HIDDEN);
 
   // ── Timer label (bottom-left, hidden when timer not running) ─────────────
   home_timer_lbl=lv_label_create(lv_scr_act());
@@ -4454,6 +4579,7 @@ static void home_screen_init(void)
   battery_timer = lv_timer_create(battery_timer_callback, 1000, nullptr);
   wifi_timer    = lv_timer_create(wifi_poll_cb, 5000, nullptr);
   ble_timer    = lv_timer_create(ble_poll_cb, 5000, nullptr);
+  temp_timer    = lv_timer_create(temp_poll_cb, 2000, nullptr);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
