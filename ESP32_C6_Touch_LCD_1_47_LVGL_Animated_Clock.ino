@@ -153,7 +153,11 @@ static const char* notify_characteristic_UUID = "0000ffb2-0000-1000-8000-00805f9
 
 static const uint8_t service_init[] = {0xAC,0xFF,0xFE,0x15,0x01,0x00,0xCC,0xE0};
 static const uint8_t start_scan[] = {0xBC,0x20,0x00,0x04,0x24};
+static const uint8_t start_scan_passive[] = {0xBC,0x20,0x00,0x20,0x40};
 static const uint8_t stop_scan[] =  {0xBC,0x21,0x00,0x00,0x21};
+static const uint8_t laser_toggle[] =  {0xBC,0x01,0x00,0x00,0x01};
+
+bool laser_active = false;
 static NimBLEClient* pClient = nullptr;
 uint16_t connHandle = 0;
 bool havePeer = false;
@@ -188,16 +192,27 @@ DeviceState deviceState = DeviceState::UNKNOWN;
 uint32_t tryTime;
 uint32_t bleConnectionTime;
 bool response_received = false;
-bool hasSavedAddr = false;
-NimBLEAddress savedAddr;
-bool bleEnablePress = false;
-bool bleDisablePress = false;
-uint32_t blePressTime;
+// bool hasSavedAddr = false;
+// NimBLEAddress savedAddr;
+// bool bleEnablePress = false;
+// bool bleDisablePress = false;
+// uint32_t blePressTime;
+
+enum class DeviceMode {
+  PASSIVE,
+  ACTIVE
+};
+
+DeviceMode prevMode = DeviceMode::PASSIVE;
+DeviceMode deviceMode = DeviceMode::PASSIVE;
+
 bool bleBusy = false;
 uint8_t* bleRawData;
 float ctemp;
 float ftemp;
-
+uint32_t hotStartTime = 0;
+uint32_t coolStartTime = 0;
+bool firstTempIgnored = false;
 
 void print_ble_raw_data(uint8_t* pData, size_t length) {
     Serial.print("RX: ");
@@ -208,6 +223,10 @@ void print_ble_raw_data(uint8_t* pData, size_t length) {
 
 void read_curr_temp() {
     uint16_t temp = 0;
+    if (!firstTempIgnored) {
+      firstTempIgnored = true;
+      return;
+    }
     if (bleRawData) {
         temp = bleRawData[5] << 8 | bleRawData[4];
         ctemp = static_cast<float>(temp) / 10.0f;
@@ -1074,7 +1093,7 @@ void ble_loop() {
           break;
         }
         case DeviceState::WAITING_FOR_STOPPED_ACK: {
-          if (millis() - tryTime > 5000) {
+          if (millis() - tryTime > 3000) {
             if (response_received) {
               setState(DeviceState::STOPPING);
             } else {
@@ -1084,11 +1103,20 @@ void ble_loop() {
           break;
         }
         case DeviceState::STOPPED: {
-          auto pClient = NimBLEDevice::getClientByHandle(connHandle);
-          pClient->disconnect();
-          bleBusy = false;
-          bleState = BleState::OFF;
-
+          if (laser_active) {
+            Serial.printf("[ble_shutdown] disabling laser\n");
+            ble_write(laser_toggle, sizeof(laser_toggle));
+            laser_active = !laser_active;
+            tryTime = millis();
+          }
+          if (millis() - tryTime > 3000) {
+            auto pClient = NimBLEDevice::getClientByHandle(connHandle);
+            pClient->disconnect();
+            bleBusy = false;
+            bleState = BleState::OFF;
+            deviceMode = DeviceMode::PASSIVE;
+            firstTempIgnored = false;
+          }
           break;
         }
       }
@@ -1193,7 +1221,12 @@ void ble_loop() {
         case DeviceState::READY: {
           // ble_write(start_scan, sizeof(start_scan));
           if ((millis() - tryTime) > 1000) {
-            ble_write(start_scan, sizeof(start_scan));
+            if (deviceMode == DeviceMode::PASSIVE) {
+              ble_write(start_scan_passive, sizeof(start_scan_passive));
+            } else {
+              ble_write(start_scan, sizeof(start_scan));
+            }
+            
             tryTime = millis();
             response_received = false;
             setState(DeviceState::STREAMING);
@@ -1210,6 +1243,65 @@ void ble_loop() {
           // if (millis() - tryTime > 10000) {
           //   setState(DeviceState::STOPPING);
           // }
+          if (ftemp > 80) {
+            if (hotStartTime == 0) {            
+              Serial.printf("[ble_mode] ftemp is %.1f, exceeds 80F\n", ftemp);
+              Serial.println("[ble_mode] changing mode to Active");
+              deviceMode = DeviceMode::ACTIVE;
+              hotStartTime = millis();
+            }
+            if (coolStartTime != 0) {
+              Serial.printf("[ble_mode] ftemp is %.1f, cooldown timer canceled\n", ftemp);
+              coolStartTime = 0;
+            }
+          }
+          if (ftemp < 80 && hotStartTime != 0) {
+            if (coolStartTime == 0) {
+              Serial.printf("[ble_mode] ftemp is %.1f, starting cooldown timer\n", ftemp);
+              coolStartTime = millis();
+            } else if (millis() - coolStartTime > 15000) {
+              Serial.printf("[ble_mode] ftemp is %.1f, cooldown timer exceeds 15 sec\n", ftemp);
+              Serial.println("[ble_mode] changing mode to Passive");
+              hotStartTime = 0;
+              deviceMode = DeviceMode::PASSIVE;
+            }
+          }
+
+          if (prevMode != deviceMode) {
+            prevMode = deviceMode;
+            setState(DeviceState::STOPPING);
+          }
+
+          break;
+        }
+        case DeviceState::STOPPING: {
+          ble_write(stop_scan, sizeof(stop_scan));
+          setState(DeviceState::WAITING_FOR_STOPPED_ACK);
+          response_received = false;
+          tryTime = millis();
+          break;
+        }
+        case DeviceState::WAITING_FOR_STOPPED_ACK: {
+          if (millis() - tryTime > 2000) {
+            if (response_received) {
+              setState(DeviceState::STOPPING);
+            } else {
+              setState(DeviceState::STOPPED);
+            }
+          }
+          break;
+        }
+        case DeviceState::STOPPED: {
+          auto pClient = NimBLEDevice::getClientByHandle(connHandle);
+          ble_write(laser_toggle, sizeof(laser_toggle));
+          laser_active = !laser_active;
+          printf("laser is %b\n", laser_active);
+          setState(DeviceState::READY);
+          tryTime = millis();
+          // pClient->disconnect();
+          // bleBusy = false;
+          // bleState = BleState::OFF;
+
           break;
         }
 
@@ -2925,7 +3017,8 @@ static void show_carousel(void)
 {
   if (modal_cont || overlay_cont) return;
   // carousel_idx=0;  // always start at CLOCK
-  carousel_idx=1;  // disagree, randomly changing the time and date by accident sucks. why is that a priority if I have wifi sync?
+  carousel_idx=4;  // disagree, randomly changing the time and date by accident sucks. why is that a priority if I have wifi sync?
+  //DEFAULT CAROUSEL
 
 
   modal_cont=lv_obj_create(lv_scr_act());
