@@ -192,11 +192,6 @@ DeviceState deviceState = DeviceState::UNKNOWN;
 uint32_t tryTime;
 uint32_t bleConnectionTime;
 bool response_received = false;
-// bool hasSavedAddr = false;
-// NimBLEAddress savedAddr;
-// bool bleEnablePress = false;
-// bool bleDisablePress = false;
-// uint32_t blePressTime;
 
 enum class DeviceMode {
   PASSIVE,
@@ -208,11 +203,16 @@ DeviceMode deviceMode = DeviceMode::PASSIVE;
 
 bool bleBusy = false;
 uint8_t* bleRawData;
-float ctemp;
-float ftemp;
+float ctemp = 20;
+float ftemp = 68;
 uint32_t hotStartTime = 0;
 uint32_t coolStartTime = 0;
-bool firstTempIgnored = false;
+uint32_t tempFirstReceived = 0;
+bool showTempsOnBoot = false;
+bool showTemps = false;
+uint8_t busyCounter = 0;
+uint32_t activeTempThreshold_F = 100;
+
 
 void print_ble_raw_data(uint8_t* pData, size_t length) {
     Serial.print("RX: ");
@@ -223,14 +223,26 @@ void print_ble_raw_data(uint8_t* pData, size_t length) {
 
 void read_curr_temp() {
     uint16_t temp = 0;
-    if (!firstTempIgnored) {
-      firstTempIgnored = true;
+    if (tempFirstReceived == 0) {
+      tempFirstReceived = millis();
       return;
     }
+    //10 sec delay after boot up to avoid stale temps triggering mode swap
+    // if (millis() - tempFirstReceived < 10000) {
+    //   return;
+    // }
     if (bleRawData) {
         temp = bleRawData[5] << 8 | bleRawData[4];
-        ctemp = static_cast<float>(temp) / 10.0f;
-        ftemp = (ctemp * 1.8f) + 32;
+        float ctemp_hold = static_cast<float>(temp) / 10.0f;
+        float ftemp_hold = (ctemp * 1.8f) + 32;
+        //for first 10 seconds of temp stream after boot, ignore high val to prevent false trigger of auto mode swap
+        uint32_t timeElapsed =  (millis() - tempFirstReceived);
+        Serial.printf("ftemp_hold: %.1f @time elapsed: %d\n", ftemp_hold,timeElapsed);
+        if ((ftemp_hold < activeTempThreshold_F) || (millis() - tempFirstReceived > 20000 )) {
+          ctemp = ctemp_hold;
+          ftemp = ftemp_hold;
+          showTempsOnBoot = true;
+        }
     }
 }
 // ─── UI handles ──────────────────────────────────────────────────────────────
@@ -909,7 +921,6 @@ class ClientCallbacks : public NimBLEClientCallbacks {
   void onConnect(NimBLEClient* pClient) override {
     Serial.printf("[BLE] Connected to: %s\n", pClient->getPeerAddress().toString().c_str());
     Serial.printf("[BLE] deviceState: %s\n", DeviceStateNames[(int) deviceState]);
-    // bleConnected = true;
     bleState = BleState::CONNECTED;
     if (deviceState != DeviceState::STREAMING) {
       setState(DeviceState::DISCOVERING);
@@ -1031,26 +1042,7 @@ bool ble_write(const uint8_t* value, size_t size) {
     Serial.printf("char can't write\n");
     return false;
   }
-
-  // if (pChr2->canRead()) {
-  //   Serial.printf("The value of: %s is now: %s\n", pChr2->getUUID().toString().c_str(), pChr2->readValue().c_str());
-  // }
   return true;
-}
-
-bool ble_read(const char* value) {
-  auto pClient = NimBLEDevice::getClientByHandle(connHandle);
-  if (!pClient) return false;
-  auto svc = pClient->getService(service_UUID);
-  if (!svc) return false;
-  auto pChr2 = svc->getCharacteristic(notify_characteristic_UUID);
-  if (!pChr2) return false;
-
-  if (pChr2->canRead()) {
-    Serial.printf("The value of: %s is now: %s\n", pChr2->getUUID().toString().c_str(), pChr2->readValue().c_str());
-    return true;
-  }
-  return false;
 }
 
 bool ble_notify() {
@@ -1078,8 +1070,6 @@ bool ble_notify() {
 void ble_loop() {
   // delay(1000);
   // Serial.printf("[ble_loop] entering");
-
-
   switch(bleState)
   {
     case BleState::DISABLING: {
@@ -1115,7 +1105,8 @@ void ble_loop() {
             bleBusy = false;
             bleState = BleState::OFF;
             deviceMode = DeviceMode::PASSIVE;
-            firstTempIgnored = false;
+            tempFirstReceived = 0;
+            showTempsOnBoot = false;
           }
           break;
         }
@@ -1239,13 +1230,14 @@ void ble_loop() {
             Serial.printf("[ble_loop] retrying start cmd...\n");
             setState(DeviceState::READY);
           }
+          showTemps = true;
           //custom stop
           // if (millis() - tryTime > 10000) {
           //   setState(DeviceState::STOPPING);
           // }
-          if (ftemp > 80) {
+          if (ftemp > activeTempThreshold_F) {
             if (hotStartTime == 0) {            
-              Serial.printf("[ble_mode] ftemp is %.1f, exceeds 80F\n", ftemp);
+              Serial.printf("[ble_mode] ftemp is %.1f, exceeds %d\n", ftemp, activeTempThreshold_F);
               Serial.println("[ble_mode] changing mode to Active");
               deviceMode = DeviceMode::ACTIVE;
               hotStartTime = millis();
@@ -1255,7 +1247,7 @@ void ble_loop() {
               coolStartTime = 0;
             }
           }
-          if (ftemp < 80 && hotStartTime != 0) {
+          if (ftemp < activeTempThreshold_F && hotStartTime != 0) {
             if (coolStartTime == 0) {
               Serial.printf("[ble_mode] ftemp is %.1f, starting cooldown timer\n", ftemp);
               coolStartTime = millis();
@@ -1266,9 +1258,10 @@ void ble_loop() {
               deviceMode = DeviceMode::PASSIVE;
             }
           }
-
+          //swapping mode passive <-> active
           if (prevMode != deviceMode) {
             prevMode = deviceMode;
+            showTemps = false;
             setState(DeviceState::STOPPING);
           }
 
@@ -1710,6 +1703,7 @@ static void ble_poll_cb(lv_timer_t *t) {
   if (prevState != bleState) {
     prevState = bleState;
     update_home_ble();
+    swap_temp_clock();
   }
 }
 
@@ -3064,7 +3058,6 @@ static void update_home_ble()
 {
   if (!home_ble_lbl) return;
   if (bleState == BleState::CONNECTED) {
-    // lv_label_set_text_fmt(home_ble_lbl, LV_SYMBOL_BLE);
     lv_obj_clear_flag(home_ble_lbl, LV_OBJ_FLAG_HIDDEN);
   } else {
     lv_obj_add_flag(home_ble_lbl, LV_OBJ_FLAG_HIDDEN);
@@ -3074,20 +3067,30 @@ static void update_home_ble()
 static void update_home_temp()
 {
   if (!home_temp_lbl) return;
-
-  lv_label_set_text_fmt(home_temp_lbl, "%.1f F", ftemp);
-  // lv_label_set_text_fmt(home_temp_lbl, "TEST");
-
-  if (prevDeviceState != deviceState) {
-    prevDeviceState = deviceState;
-    if (deviceState== DeviceState::STREAMING) {
-      // lv_label_set_text_fmt(home_ble_lbl, LV_SYMBOL_BLE);
-      lv_obj_add_flag(home_time_lbl, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_clear_flag(home_temp_lbl, LV_OBJ_FLAG_HIDDEN);
+  if (showTemps && showTempsOnBoot) {
+    if (ftemp >= 100) {
+      lv_label_set_text_fmt(home_temp_lbl, "%.1fF", ftemp);
     } else {
-      lv_obj_add_flag(home_temp_lbl, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_clear_flag(home_time_lbl, LV_OBJ_FLAG_HIDDEN);
+      lv_label_set_text_fmt(home_temp_lbl, "%.1f F", ftemp);
     }
+  } else {
+    switch (busyCounter) {
+      case 0: lv_label_set_text_fmt(home_temp_lbl, "-----"); break;
+      case 1: lv_label_set_text_fmt(home_temp_lbl, "\\\\\\\\\\"); break;
+      case 2: lv_label_set_text_fmt(home_temp_lbl, "|||||"); break;
+      case 3: lv_label_set_text_fmt(home_temp_lbl, "/////"); break;
+    }
+    busyCounter = (busyCounter + 1) % 4;
+  }
+}
+
+static void swap_temp_clock() {
+  if (bleState== BleState::CONNECTED) {
+    lv_obj_add_flag(home_time_lbl, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(home_temp_lbl, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(home_temp_lbl, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(home_time_lbl, LV_OBJ_FLAG_HIDDEN);
   }
 }
 
@@ -3166,1244 +3169,11 @@ static void clock_face_show(lv_timer_t *t)
   clock_timer = lv_timer_create(clock_tick_cb, 1000, nullptr);
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-//  APPS MENU — long-press the smile GIF (upper-left tap) → math gate → 3 games
-//
-//  Flow:  UL tap → smile GIF opens → long-press GIF → math challenge
-//         Correct answer → apps carousel (RPS / Dice / Coin)
-//         Tap item → game  Tap to play again  Long-press to go back
-//         Long-press in carousel → close all, return to clock
-// ══════════════════════════════════════════════════════════════════════════════
-
-// ── Note frequencies and menu tone helpers ────────────────────────────────────
-// menu_tone() is a short blocking call — safe in LVGL timer callbacks because
-// the longest note (500ms) is still shorter than any LVGL watchdog threshold.
-// #define NOTE_C4  262
-// #define NOTE_G4  392
-// #define NOTE_A4  440
-// #define NOTE_B4  494
-// #define NOTE_C5  523
-// #define NOTE_D5  587
-// #define NOTE_E5  659
-// #define NOTE_A5  880
-// #define NOTE_B5  988
-// #define NOTE_HI  1046  // high C6
-
-// static void menu_tone(int freq, int ms)
-// {
-//   if (!cfg.menu_sounds) return;
-//   ledcChangeFrequency(BUZZER_PIN, freq, 8);   // change freq on already-attached pin
-//   ledcWrite(BUZZER_PIN, 96);
-//   delay(ms);
-//   ledcWrite(BUZZER_PIN, 0);
-//   ledcChangeFrequency(BUZZER_PIN, 2000, 8);   // restore alarm freq
-// }
-
-// static void menu_play_success()
-// {
-//   if (!cfg.menu_sounds) return;
-//   // successMelody: A5 B5 C5 B5 C5 D5 C5 D5 E5 D5 E5 E5 @100ms each
-//   static const int mel[] = {
-//     880,988,523,494, 523,587,523,587, 659,587,659,659
-//   };
-//   for (int i = 0; i < 12; i++) menu_tone(mel[i], 100);
-// }
-
-// static void menu_play_failure()
-// {
-//   if (!cfg.menu_sounds) return;
-//   menu_tone(NOTE_G4, 250);
-//   menu_tone(NOTE_C4, 500);
-// }
-
-// static void menu_tone_beep() { menu_tone(NOTE_A4, 60); }
-// static void menu_tone_hi()   { menu_tone(NOTE_HI, 80); }
-
-// // ── Apps state ────────────────────────────────────────────────────────────────
-// // apps_cont declared globally above wifi_poll_cb
-// static int         apps_idx       = 0;   // 0=RPS  1=Dice  2=Coin
-// static int         app_subphase   = 0;   // 0=carousel  1=game
-// static lv_timer_t *app_anim_timer = nullptr;
-// static lv_timer_t *app_gyro_timer = nullptr;  // shake/tilt watcher for RPS & Dice
-// static float        app_gyro_z0   = 0.0f;     // previous accelZ for spike detection
-// static int         app_anim_step   = 0;
-// static int         app_anim_result = 0;  // cpu choice for RPS, roll for Dice
-// static lv_obj_t   *app_anim_lbl    = nullptr;  // main art label
-// static lv_obj_t   *app_anim_num    = nullptr;  // countdown number (RPS)
-// static lv_obj_t   *math_cont     = nullptr;
-// static int         math_answer   = 0;
-// static lv_timer_t *math_fail_tmr = nullptr;
-
-// // Forward declarations
-// static void show_apps(void);
-// static void apps_carousel_build(void);
-// static void app_screen_start(void);
-// static void app_screen_result(int data);
-// static void app_anim_stop(void);
-
-// ── Math problem generator ────────────────────────────────────────────────────
-// static void math_generate(char *buf, int blen, int opts[4])
-// {
-//   int a, b, op = random(4);
-//   switch (op) {
-//     case 0: math_answer = random(5, 94); a = random(1, math_answer); b = math_answer - a;
-//             snprintf(buf, blen, "%d + %d = ?", a, b); break;
-//     case 1: a = random(11, 99); b = random(1, a - 1); math_answer = a - b;
-//             snprintf(buf, blen, "%d - %d = ?", a, b); break;
-//     case 2: a = random(2, 9); b = random(2, max(2, (int)(99 / a)));
-//             math_answer = a * b; snprintf(buf, blen, "%d x %d = ?", a, b); break;
-//     default: math_answer = random(2, 15); b = random(2, 8); a = math_answer * b;
-//              snprintf(buf, blen, "%d / %d = ?", a, b); break;
-//   }
-//   opts[0] = math_answer;
-//   int wi = 1;
-//   while (wi < 4) {
-//     int delta = (random(2) ? 1 : -1) * random(1, 19);
-//     int cand  = math_answer + delta;
-//     if (cand < 1)  cand = math_answer + wi * 13;
-//     if (cand > 99) cand = math_answer - wi * 11;
-//     if (cand < 1)  cand = wi + 2;
-//     bool dup = false;
-//     for (int k = 0; k < wi; k++) if (opts[k] == cand) { dup = true; break; }
-//     if (!dup) opts[wi++] = cand;
-//   }
-//   // Fisher-Yates shuffle
-//   for (int i = 3; i > 0; i--) {
-//     int j = random(i + 1), t = opts[i]; opts[i] = opts[j]; opts[j] = t;
-//   }
-// }
-
-// static void math_close_overlay()
-// {
-//   if (tilt_timer) { lv_timer_del(tilt_timer); tilt_timer = nullptr; }
-//   emotion_tilt_active = false; emotion_current_gif = nullptr;
-//   buzzer_stop();
-//   if (overlay_cont) { lv_obj_del(overlay_cont); overlay_cont = nullptr; }
-// }
-
-// static void math_fail_cb(lv_timer_t *t)
-// {
-//   lv_timer_del(t); math_fail_tmr = nullptr;
-//   if (math_cont) { lv_obj_del(math_cont); math_cont = nullptr; }
-//   math_close_overlay();
-// }
-
-// static void math_btn_cb(lv_event_t *e)
-// {
-//   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-//   int chosen = (int)(intptr_t)lv_event_get_user_data(e);
-//   if (math_cont) { lv_obj_del(math_cont); math_cont = nullptr; }
-
-//   if (chosen == math_answer) {
-//     menu_play_success();
-//     math_close_overlay();
-//     show_apps();
-//   } else {
-//     menu_play_failure();
-//     // Wrong: show big white X for 3 s, then return to clock
-//     math_cont = lv_obj_create(lv_scr_act());
-//     lv_obj_set_size(math_cont, 320, 172);
-//     lv_obj_align(math_cont, LV_ALIGN_CENTER, 0, 0);
-//     lv_obj_set_style_bg_color(math_cont, lv_color_black(), 0);
-//     lv_obj_set_style_bg_opa(math_cont, LV_OPA_COVER, 0);
-//     lv_obj_set_style_border_width(math_cont, 0, 0);
-//     lv_obj_set_style_pad_all(math_cont, 0, 0);
-//     lv_obj_clear_flag(math_cont, LV_OBJ_FLAG_SCROLLABLE);
-//     lv_obj_t *xl = lv_label_create(math_cont);
-//     lv_label_set_text(xl, "X");
-//     lv_obj_set_style_text_font(xl, &lv_font_montserrat_48, 0);
-//     lv_obj_set_style_text_color(xl, lv_color_white(), 0);
-//     lv_obj_align(xl, LV_ALIGN_CENTER, 0, 0);
-//     math_fail_tmr = lv_timer_create(math_fail_cb, 3000, nullptr);
-//     lv_timer_set_repeat_count(math_fail_tmr, 1);
-//   }
-// }
-
-// static void show_math_challenge()
-// {
-//   if (math_cont) return;
-//   // Kill the GIF decoder immediately — it keeps running behind math_cont
-//   // and causes 200-300ms lag on every button tap.
-//   if (tilt_timer) { lv_timer_del(tilt_timer); tilt_timer = nullptr; }
-//   emotion_tilt_active = false; emotion_current_gif = nullptr;
-//   if (overlay_cont) { lv_obj_del(overlay_cont); overlay_cont = nullptr; }
-//   char prob[32]; int opts[4];
-//   math_generate(prob, sizeof(prob), opts);
-
-//   math_cont = lv_obj_create(lv_scr_act());
-//   lv_obj_set_size(math_cont, 310, 162);
-//   lv_obj_align(math_cont, LV_ALIGN_CENTER, 0, 0);
-//   lv_obj_set_style_bg_color(math_cont, lv_color_make(6, 6, 28), 0);
-//   lv_obj_set_style_bg_opa(math_cont, LV_OPA_COVER, 0);
-//   lv_obj_set_style_border_color(math_cont, lv_color_make(60, 80, 220), 0);
-//   lv_obj_set_style_border_width(math_cont, 2, 0);
-//   lv_obj_set_style_radius(math_cont, 6, 0);
-//   lv_obj_set_style_pad_all(math_cont, 0, 0);
-//   lv_obj_clear_flag(math_cont, LV_OBJ_FLAG_SCROLLABLE);
-
-//   lv_obj_t *title = lv_label_create(math_cont);
-//   lv_label_set_text(title, "Solve to enter:");
-//   lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
-//   lv_obj_set_style_text_color(title, lv_color_make(140, 140, 210), 0);
-//   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
-
-//   lv_obj_t *prob_lbl = lv_label_create(math_cont);
-//   lv_label_set_text(prob_lbl, prob);
-//   lv_obj_set_style_text_font(prob_lbl, &lv_font_montserrat_48, 0);
-//   lv_obj_set_style_text_color(prob_lbl, lv_color_white(), 0);
-//   lv_obj_align(prob_lbl, LV_ALIGN_CENTER, 0, -18);
-
-//   for (int i = 0; i < 4; i++) {
-//     lv_obj_t *btn = lv_btn_create(math_cont);
-//     lv_obj_set_size(btn, 60, 32);
-//     lv_obj_set_pos(btn, 20 + i * 68, 120);
-//     lv_obj_set_style_bg_color(btn, lv_color_make(30, 50, 160), 0);
-//     lv_obj_set_style_radius(btn, 4, 0);
-//     lv_obj_add_event_cb(btn, math_btn_cb, LV_EVENT_CLICKED, (void*)(intptr_t)opts[i]);
-//     lv_obj_t *lbl = lv_label_create(btn);
-//     char ns[8]; snprintf(ns, sizeof(ns), "%d", opts[i]);
-//     lv_label_set_text(lbl, ns);
-//     lv_obj_set_style_text_font(lbl, &dejavu_mono_14, 0);
-//     lv_obj_center(lbl);
-//   }
-// }
-
-// static void apps_gif_longpress_cb(lv_event_t *e)
-// {
-//   if (lv_event_get_code(e) != LV_EVENT_LONG_PRESSED) return;
-//   lv_indev_wait_release(lv_indev_get_act());
-//   // show_math_challenge();
-// }
-
-// ── Apps lifecycle ────────────────────────────────────────────────────────────
-// static void app_anim_stop()
-// {
-//   if (app_anim_timer) { lv_timer_del(app_anim_timer); app_anim_timer = nullptr; }
-//   app_anim_lbl = nullptr;
-//   app_anim_num = nullptr;
-//   app_anim_step = 0;
-// }
-
-// static void apps_close()
-// {
-//   app_anim_stop();
-//   app_gyro_stop();
-//   metro_stop();
-//   if (apps_cont) { lv_obj_del(apps_cont); apps_cont = nullptr; }
-//   app_subphase = 0;
-// }
-
-// static void apps_longpress_cb(lv_event_t *e)
-// {
-//   // how paranoid can you be
-//   // if (lv_event_get_code(e) != LV_EVENT_LONG_PRESSED) return;
-//   lv_indev_wait_release(lv_indev_get_act());
-//   if (app_subphase > 0) {
-//     metro_stop();
-//     app_anim_stop();
-//     app_gyro_stop();
-//     app_subphase = 0;
-//     apps_carousel_build();
-//   } else {
-//     apps_close();
-//   }
-// }
-
-// static void apps_left_cb(lv_event_t *e)
-// { apps_idx=(apps_idx+4)%5;apps_carousel_build(); }
-// // { if(lv_event_get_code(e)==LV_EVENT_PRESSED){apps_idx=(apps_idx+4)%5;apps_carousel_build();} }
-// static void apps_right_cb(lv_event_t *e)
-// { apps_idx=(apps_idx+1)%5;apps_carousel_build(); }
-// // { if(lv_event_get_code(e)==LV_EVENT_PRESSED){apps_idx=(apps_idx+1)%5;apps_carousel_build();} }
-
-// // Transparent full-screen tap zone helper for game screens
-// static lv_obj_t *app_tapzone(lv_obj_t *p, lv_event_cb_t cb)
-// {
-//   lv_obj_t *z = lv_obj_create(p);
-//   lv_obj_set_size(z, 320, 172); lv_obj_set_pos(z, 0, 0);
-//   lv_obj_set_style_bg_opa(z, LV_OPA_TRANSP, 0);
-//   lv_obj_set_style_border_width(z, 0, 0); lv_obj_set_style_pad_all(z, 0, 0);
-//   lv_obj_set_style_radius(z, 0, 0); lv_obj_clear_flag(z, LV_OBJ_FLAG_SCROLLABLE);
-//   if (cb) lv_obj_add_event_cb(z, cb, LV_EVENT_CLICKED, nullptr);
-//   lv_obj_add_event_cb(z, apps_longpress_cb, LV_EVENT_LONG_PRESSED, nullptr);
-//   return z;
-// }
-
-// // ── ASCII art ─────────────────────────────────────────────────────────────────
-// static const char *dice_art_roll(int n)
-// {
-//   switch (n) {
-//     case 1: return
-//       "    ______    \n"
-//       "  /\\     \\  \n"
-//       " /o \\  o  \\ \n"
-//       "/   o\\_____\\\n"
-//       "\\o   /o    / \n"
-//       " \\ o/  o  /  \n"
-//       "  \\/____o/   ";
-//     case 2: return
-//       "    ______    \n"
-//       "  /\\     \\  \n"
-//       " /  \\  o  \\ \n"
-//       "/ o  \\_____\\\n"
-//       "\\  o /o    / \n"
-//       " \\  /  o  /  \n"
-//       "  \\/____o/   ";
-//     default: return
-//       // "  .-------.\n"
-//       // " /   o   /|\n"
-//       // "/_______/o|\n"
-//       // "| o     | |\n"
-//       // "|   o   |o/\n"
-//       // "|     o |/ \n"
-//       // "'-------'  ";
-//       "    ______    \n"
-//       "  /\\ o   \\  \n"
-//       " /o \\  o  \\ \n"
-//       "/   o\\___o_\\\n"
-//       "\\o   /     / \n"
-//       " \\ o/  o  /  \n"
-//       "  \\/_____/   ";
-//   }
-// }
-
-// static const char *dice_art(int n)
-// {
-//   switch (n) {
-//     case 1: return
-//       ".-------.\n"
-//       "|       |\n"
-//       "|   o   |\n"
-//       "|       |\n"
-//       "\'-------\'";
-//     case 2: return
-//       ".-------.\n"
-//       "| o     |\n"
-//       "|       |\n"
-//       "|     o |\n"
-//       "\'-------\'";
-//     case 3: return
-//       ".-------.\n"
-//       "| o     |\n"
-//       "|   o   |\n"
-//       "|     o |\n"
-//       "\'-------\'";
-//     case 4: return
-//       ".-------.\n"
-//       "| o   o |\n"
-//       "|       |\n"
-//       "| o   o |\n"
-//       "\'-------\'";
-//     case 5: return
-//       ".-------.\n"
-//       "| o   o |\n"
-//       "|   o   |\n"
-//       "| o   o |\n"
-//       "\'-------\'";
-//     default: return
-//       ".-------.\n"
-//       "| o   o |\n"
-//       "| o   o |\n"
-//       "| o   o |\n"
-//       "\'-------\'";
-//   }
-// }
-
-// // ── Shake animation art ──────────────────────────────────────────────────────
-// static const char *rps_art_shake(bool up)
-// {
-//   if (up) return
-//     "    _______      \n"
-//     "---'   ____)     \n"
-//     "      (_____)    \n"
-//     "      (_____)    \n"
-//     "      (____)     \n"
-//     "---.__(___)      \n"
-//     "                   ";
-//   return
-//     "                 \n"
-//     "    _______      \n"
-//     "---'   ____)     \n"
-//     "      (_____)    \n"
-//     "      (_____)    \n"
-//     "      (____)     \n"
-//     " ---.__(___)       ";
-// }
-
-// static const char *rps_art(int c)
-// {
-//   if (c==1) return
-//     "    _______       \n"
-//     "---'   ____)      \n"
-//     "      (_____)     \n"
-//     "      (_____)     \n"
-//     "      (____)      \n"
-//     " ---.__(___)        ";
-
-//   if (c==2) return
-//     "    ________      \n"
-//     "---'    ____)____ \n"
-//     "           ______)\n"
-//     "          _______)\n"
-//     "         _______) \n"
-//     " ---.__________)    ";
-
-//   return
-//     "    _______       \n"
-//     "---'   ____)____  \n"
-//     "          ______) \n"
-//     "       __________)\n"
-//     "      (____)      \n"
-//     " ---.__(___)        ";
-// }
-
-// static const char *rps_name(int c)
-// { return c==1?"Rock":c==2?"Paper":"Scissors"; }
-// static const char *rps_result(int u, int cpu_c)
-// {
-//   if (u==cpu_c) return "TIE!";
-//   if ((u==1&&cpu_c==3)||(u==2&&cpu_c==1)||(u==3&&cpu_c==2)) return "YOU WIN!";
-//   return "CPU WINS!";
-// }
-
-// // Some ASCII art sourced from https://www.asciiart.eu/video-games/pokemon
-// // All Pokémon characters are property of The Pokémon Company.
-// // This project is not affiliated with or endorsed by The Pokémon Company.
-// static const char *coin_art(bool heads)
-// {
-//   return heads
-//     ? "       \\:.             .:/\n"
-//       "        \\``._________.''/\n"
-//       "         \\             /\n"
-//       " .--.--, / .':.   .':. \\\n"
-//       "/__:  /  | '::' . '::' |\n"
-//       "   / /   |`.   ._.   .'|\n"
-//       "  / /    |.'         '.|\n"
-//       " /___-_-,|.\\  \\   /  /.|\n"
-//       "      // |''\\.;   ;,/ '|\n"
-//       "      `==|:=         =:|\n"
-//       "         `.          .'\n"
-//       "           :-._____.-:\n"
-//       "          `''       `''\n"
-//     : "                                 ,'\\\n"
-//       "    _.---.        ____         ,'  _\\   ___    ___     ____\n"
-//       " ,-'      `.     |    |  /`.   \\,-'    |   \\  /   |   |    \\  |`.\n"
-//       "\\     __    \\    '-.  | /   `.  ___    |    \\/    |   '-.   \\ | |\n"
-//       " \\.   \\ \\   |  __  |  |/    ,','_  `.  |          | __  |    \\| |\n"
-//       "   \\   \\/   /,' _`.|      ,' / / / /   |          ,' _`.|     | |\n"
-//       "    \\    ,-'/  /   \\    ,'   | \\/ / ,`.|         /  /   \\  |    |\n"
-//       "     \\   \\ |   \\_/  |   `-.  \\    `'  /|  |    ||   \\_/  | |\\   |\n"
-//       "      \\   \\ \\      /       `-.`.___,-' |  |\\  /| \\      /  | |  |\n"
-//       "       \\   \\ `.__,'|  |`-._    `|      |__| \\/ |  `.__,'|  | |  |\n"
-//       "        \\.-'       |__|    `-._ |              '-.|     '-.| |  |\n"
-//       "                                `'                            '-.|\n";
-// }
-
-// // Common bottom hint
-// static void app_hint(lv_obj_t *p, const char *text)
-// {
-//   lv_obj_t *h = lv_label_create(p);
-//   lv_label_set_text(h, text);
-//   lv_obj_set_style_text_font(h, &dejavu_mono_14, 0);
-//   lv_obj_set_style_text_color(h, lv_color_make(70, 70, 95), 0);
-//   lv_obj_set_style_text_opa(h, LV_OPA_70, 0);
-//   lv_obj_align(h, LV_ALIGN_BOTTOM_MID, 0, -4);
-// }
-
-// // ── Game result screen ────────────────────────────────────────────────────────
-// static void app_repeat_tap_cb(lv_event_t *e)
-// { if(lv_event_get_code(e)==LV_EVENT_CLICKED) app_screen_start(); }
-
-// static void app_screen_result(int data)
-// {
-//   lv_obj_clean(apps_cont);
-//   app_subphase = 1;
-
-//   lv_obj_t *art = lv_label_create(apps_cont);
-//   lv_obj_set_style_text_font(art, &dejavu_mono_14, 0);
-//   lv_obj_set_style_text_color(art, lv_color_white(), 0);
-//   lv_obj_set_style_text_align(art, LV_TEXT_ALIGN_CENTER, 0);
-
-//   lv_obj_t *res = lv_label_create(apps_cont);
-//   lv_obj_set_style_text_font(res, &dejavu_mono_16, 0);
-//   lv_obj_set_style_text_align(res, LV_TEXT_ALIGN_CENTER, 0);
-
-//   if (apps_idx == 0) {
-//     // RPS: data = user choice, pick cpu now
-//     int cpu = random(1, 4);
-//     const char *verdict = rps_result(data, cpu);
-//     char buf[120];
-//     snprintf(buf, sizeof(buf), "%s\nvs\n%s", rps_art(data), rps_art(cpu));
-//     lv_label_set_text(art, buf);
-//     lv_label_set_long_mode(art, LV_LABEL_LONG_WRAP);
-//     lv_obj_set_width(art, 280);
-//     lv_obj_align(art, LV_ALIGN_CENTER, 0, -28);
-//     lv_label_set_text(res, verdict);
-//     lv_obj_set_style_text_color(res,
-//       strcmp(verdict,"TIE!")==0     ? lv_color_make(220,220,60) :
-//       strcmp(verdict,"YOU WIN!")==0 ? lv_color_make(60,220,60)  :
-//                                       lv_color_make(220,60,60), 0);
-//     lv_obj_align(res, LV_ALIGN_BOTTOM_MID, 0, -36);
-//   } else if (apps_idx == 1) {
-//     // Dice: data = 1-6
-//     lv_label_set_text(art, dice_art(data));
-//     lv_obj_align(art, LV_ALIGN_CENTER, 0, -16);
-//     char buf[782]; snprintf(buf, sizeof(buf), "Rolled: %d", data);
-//     lv_label_set_text(res, buf);
-//     lv_obj_set_style_text_color(res, lv_color_make(100, 200, 255), 0);
-//     lv_obj_align(res, LV_ALIGN_BOTTOM_MID, 0, -36);
-//   } else {
-//     // Coin: data = 0=heads 1=tails
-//     menu_tone_hi();  // hi-tone on flip result
-//     lv_obj_set_style_text_font(art, &dejavu_mono_8, 0);
-//     lv_label_set_long_mode(art, LV_LABEL_LONG_WRAP);
-//     lv_obj_set_style_text_align(art, LV_TEXT_ALIGN_LEFT, 0);
-//     lv_label_set_text(art, coin_art(data == 0));
-//     lv_obj_align(art, LV_ALIGN_CENTER, 0, -16);
-//     lv_label_set_text(res, data==0 ? "Pikachu!" : "Go!");
-//     lv_obj_set_style_text_color(res,
-//       data==0 ? lv_color_make(255,220,60) : lv_color_make(180,180,255), 0);
-//     lv_obj_align(res, LV_ALIGN_BOTTOM_MID, 0, -26);
-//   }
-
-//   app_hint(apps_cont, "tap again  .  hold to exit");
-//   app_tapzone(apps_cont, app_repeat_tap_cb);  // on top, transparent
-// }
-
-// // ── RPS animation timer (3-2-1 shake then reveal) ────────────────────────────
-// static void rps_anim_tick_cb(lv_timer_t * /*t*/)
-// {
-//   if (!apps_cont || !app_anim_lbl) { app_anim_stop(); return; }
-
-//   if (app_anim_step < 7) {
-//     // Steps 0-5: up/down × 3, countdown 3-2-1
-//     bool up = (app_anim_step % 2 == 0);
-//     lv_label_set_text(app_anim_lbl, rps_art_shake(up));
-//     if (!up) menu_tone_beep();  // beep on each DOWN move
-//     if (app_anim_num) {
-//       int count = 3 - (app_anim_step / 2);
-//       char buf[4]; snprintf(buf, sizeof(buf), "%d", count);
-//       lv_label_set_text(app_anim_num, buf);
-//     }
-//     app_anim_step++;
-//   } else {
-//     // Animation done — reveal cpu art + GO!
-//     menu_tone_hi();  // high tone on GO!
-//     app_anim_stop();
-//     lv_obj_clean(apps_cont);
-
-//     lv_obj_t *art = lv_label_create(apps_cont);
-//     lv_obj_set_style_text_font(art, &dejavu_mono_14, 0);
-//     lv_obj_set_style_text_color(art, lv_color_white(), 0);
-//     lv_obj_set_style_text_align(art, LV_TEXT_ALIGN_CENTER, 0);
-//     lv_label_set_text(art, rps_art(app_anim_result));
-//     lv_label_set_long_mode(art, LV_LABEL_LONG_WRAP);
-//     lv_obj_set_width(art, 290);
-//     lv_obj_align(art, LV_ALIGN_CENTER, 0, -20);
-
-//     lv_obj_t *go = lv_label_create(apps_cont);
-//     lv_label_set_text(go, "GO!");
-//     lv_obj_set_style_text_font(go, &dejavu_mono_16, 0);
-//     lv_obj_set_style_text_color(go, lv_color_make(60, 220, 60), 0);
-//     lv_obj_align(go, LV_ALIGN_BOTTOM_MID, 0, -36);
-
-//     app_hint(apps_cont, "tap again  .  hold to exit");
-//     app_tapzone(apps_cont, app_repeat_tap_cb);
-//   }
-// }
-
-// // ── Dice animation timer (rolling → result) ───────────────────────────────────
-// static void dice_anim_tick_cb(lv_timer_t * /*t*/)
-// {
-//   if (!apps_cont || !app_anim_lbl) { app_anim_stop(); return; }
-
-//   if (app_anim_step < 3) {
-//     // Steps 0-2: show three shake frames (no text)
-//     lv_label_set_text(app_anim_lbl, dice_art_roll(app_anim_step + 1));
-//     menu_tone_beep();
-//     app_anim_step++;
-//   } else {
-//     // Animation done — show final dice face
-//     menu_tone_hi();  // hi-tone on result
-//     app_anim_stop();
-//     app_screen_result(app_anim_result);  // app_anim_result = 1-6
-//   }
-// }
-
-// // ── Gyro shake/tilt: restart RPS or Dice ─────────────────────────────────────
-// // Axis reference from tilt_poll_cb (board in landscape, screen facing user):
-// //   accelX: ±1g when tilting forward/back
-// //   accelY: ±1g when tilting left/right
-// //   accelZ: ≈ +1g at rest (gravity); spikes sharply on a shake
-// //
-// // Triggers:
-// //   shake   |ΔaccelZ| > 1.8 g between consecutive 150ms samples
-// //   tilt    |accelY|  > 1.0 g  (hard side tilt)
-// static void app_gyro_poll_cb(lv_timer_t * /*t*/)
-// {
-//   if (!imuReady || !apps_cont) return;
-//   if (apps_idx != 0 && apps_idx != 1) return;  // RPS=0, Dice=1 only
-//   if (app_subphase < 1) return;                 // not in-game yet
-
-//   imu.update();
-//   imu.getAccel(&accelData);
-
-//   float z  = accelData.accelZ;
-//   float y  = accelData.accelY;
-//   float dz = fabsf(z - app_gyro_z0);
-//   app_gyro_z0 = z;
-
-//   if (dz > 1.8f || fabsf(y) > 1.0f) {
-//     Serial.printf("[GYRO] restart idx=%d dz=%.2f y=%.2f\n", apps_idx, dz, y);
-//     // app_screen_start() restarts the game cleanly (same as tapping the screen)
-//     app_screen_start();
-//   }
-// }
-
-// // Start gyro watcher. Safe to call when already running — reuses the timer.
-// static void app_gyro_start()
-// {
-//   if (!imuReady) return;
-//   if (app_gyro_timer) {
-//     // Timer already running (e.g. game restarted) — just reset the Z baseline
-//     app_gyro_z0 = 0.0f;
-//     return;
-//   }
-//   app_gyro_z0   = 0.0f;
-//   app_gyro_timer = lv_timer_create(app_gyro_poll_cb, 150, nullptr);
-//   Serial.println("[GYRO] watcher started");
-// }
-
-// // Stop gyro watcher. Called when leaving the game entirely.
-// static void app_gyro_stop()
-// {
-//   if (app_gyro_timer) {
-//     lv_timer_del(app_gyro_timer);
-//     app_gyro_timer = nullptr;
-//     Serial.println("[GYRO] watcher stopped");
-//   }
-// }
-
-// // ── Start RPS animation ───────────────────────────────────────────────────────
-// static void app_screen_rps_start()
-// {
-//   lv_obj_clean(apps_cont);
-//   app_subphase = 1;
-//   app_anim_step   = 0;
-//   app_anim_result = random(1, 4);  // cpu choice decided now
-
-//   app_anim_lbl = lv_label_create(apps_cont);
-//   lv_obj_set_style_text_font(app_anim_lbl, &dejavu_mono_14, 0);
-//   lv_obj_set_style_text_color(app_anim_lbl, lv_color_white(), 0);
-//   lv_obj_set_style_text_align(app_anim_lbl, LV_TEXT_ALIGN_CENTER, 0);
-//   lv_label_set_long_mode(app_anim_lbl, LV_LABEL_LONG_WRAP);
-//   lv_obj_set_width(app_anim_lbl, 290);
-//   lv_label_set_text(app_anim_lbl, rps_art_shake(true));
-//   lv_obj_align(app_anim_lbl, LV_ALIGN_CENTER, 0, -24);
-
-//   app_anim_num = lv_label_create(apps_cont);
-//   lv_obj_set_style_text_font(app_anim_num, &dejavu_mono_16, 0);
-//   lv_obj_set_style_text_color(app_anim_num, lv_color_make(220, 220, 60), 0);
-//   lv_obj_set_style_text_align(app_anim_num, LV_TEXT_ALIGN_CENTER, 0);
-//   lv_label_set_text(app_anim_num, "3");
-//   lv_obj_align(app_anim_num, LV_ALIGN_BOTTOM_MID, 0, -20);
-
-//   app_anim_timer = lv_timer_create(rps_anim_tick_cb, 250, nullptr);
-//   app_gyro_start();  // shake or tilt restarts the game
-// }
-
-// // ── Start Dice animation ──────────────────────────────────────────────────────
-// static void app_screen_dice_start()
-// {
-//   lv_obj_clean(apps_cont);
-//   app_subphase = 1;
-//   app_anim_step   = 0;
-//   app_anim_result = random(1, 7);  // 1-6, decided now
-
-//   app_anim_lbl = lv_label_create(apps_cont);
-//   lv_obj_set_style_text_font(app_anim_lbl, &dejavu_mono_14, 0);
-//   lv_obj_set_style_text_color(app_anim_lbl, lv_color_white(), 0);
-//   lv_obj_set_style_text_align(app_anim_lbl, LV_TEXT_ALIGN_CENTER, 0);
-//   lv_label_set_text(app_anim_lbl, dice_art_roll(1));
-//   lv_obj_align(app_anim_lbl, LV_ALIGN_CENTER, 0, -10);
-//   app_anim_num = nullptr;
-
-//   app_anim_timer = lv_timer_create(dice_anim_tick_cb, 500, nullptr);
-//   app_gyro_start();  // shake or tilt restarts the game
-// }
-
-// // ══════════════════════════════════════════════════════════════════════════════
-// //  METRONOME  (apps_idx == 3)
-// //
-// //  UI (320x172):
-// //    Row1 y8:  BPM slider (148px) + large BPM number + "BPM" label
-// //    Row2 y42: [-5] [+5] [START/STOP] buttons
-// //    Row3 y76: beat dot indicators (lit RED=downbeat, GREEN=other)
-// //    Row4 y113: time-sig tabs [2/4] [3/4] [4/4]
-// //
-// //  Timer is pure lv_timer — never blocked by WiFi or other LVGL tasks.
-// //  Buzzer fires direct ledcChangeFrequency, independent of cfg.menu_sounds.
-// // ══════════════════════════════════════════════════════════════════════════════
-
-// #define METRO_BPM_MIN  60
-// #define METRO_BPM_MAX  240
-// #define METRO_TONE_HI  1800   // Hz — downbeat accent
-// #define METRO_TONE_LO  900    // Hz — weak beats
-// #define METRO_BEEP_MS  25     // ms each beep lasts
-
-// static int         metro_bpm       = 90;
-// static int         metro_beats     = 4;    // 2, 3, or 4
-// static int         metro_beat_idx  = 0;
-// static bool        metro_running   = false;
-// static esp_timer_handle_t metro_hw_timer   = nullptr;  // hw beat timer (µs accurate)
-// static esp_timer_handle_t metro_hw_off_tmr = nullptr;  // hw buzzer-off timer
-// static lv_timer_t        *metro_dot_timer  = nullptr;  // LVGL poll for dot updates
-// static volatile int       metro_beat_fired = -1;       // beat idx set by HW, read by LVGL
-// static volatile bool      metro_beat_down  = false;    // was it a downbeat
-// static lv_obj_t   *metro_dots[4]   = {nullptr,nullptr,nullptr,nullptr};
-// static lv_obj_t   *metro_bpm_lbl   = nullptr;
-// static lv_obj_t   *metro_slider    = nullptr;
-// static lv_obj_t   *metro_start_lbl = nullptr;
-
-// static void metro_build_ui();  // fwd
-
-// // HW timer callback — safe to call ledcWrite from timer task context
-// static void metro_hw_off_cb(void *)
-// {
-//   ledcWrite(BUZZER_PIN, 0);
-//   ledcChangeFrequency(BUZZER_PIN, 2000, 8);
-// }
-
-// // ── Hardware timer callback (runs in esp_timer task, NOT in LVGL loop) ──────
-// // Only touches hardware registers. Signals LVGL via volatile flags.
-// static void metro_hw_beat_cb(void *)
-// {
-//   int  beat = metro_beat_idx;
-//   bool down = (beat == 0);
-//   // Fire buzzer — register write, safe from any task context
-//   ledcChangeFrequency(BUZZER_PIN, down ? METRO_TONE_HI : METRO_TONE_LO, 8);
-//   ledcWrite(BUZZER_PIN, 110);
-//   // Schedule buzzer off via second hw timer
-//   if (metro_hw_off_tmr) esp_timer_start_once(metro_hw_off_tmr, METRO_BEEP_MS * 1000ULL);
-//   // Signal LVGL dot-update timer (consumed in metro_dot_poll_cb)
-//   metro_beat_down  = down;
-//   metro_beat_fired = beat;   // atomic int write on RISC-V
-//   // Advance beat index
-//   metro_beat_idx = (beat + 1) % metro_beats;
-// }
-
-// // ── LVGL poll timer (20 ms) — updates dot colours from HW beat signal ────────
-// static void metro_dot_poll_cb(lv_timer_t *)
-// {
-//   if (!apps_cont) return;
-//   int fired = metro_beat_fired;
-//   if (fired < 0) return;       // no new beat since last poll
-//   metro_beat_fired = -1;        // consume
-//   bool down = metro_beat_down;
-//   for (int i = 0; i < metro_beats; i++) {
-//     if (!metro_dots[i]) continue;
-//     lv_obj_set_style_bg_color(metro_dots[i],
-//       (i == fired) ? (down ? lv_color_make(220,50,50) : lv_color_make(50,200,80))
-//                    : lv_color_make(35,35,45), 0);
-//   }
-// }
-
-// // Stop audio+timer and reset visual state — UI pointers stay valid.
-// static void metro_stop_audio()
-// {
-//   // Stop hw timers (safe to stop an already-stopped timer)
-//   if (metro_hw_timer)   esp_timer_stop(metro_hw_timer);
-//   if (metro_hw_off_tmr) esp_timer_stop(metro_hw_off_tmr);
-//   // Stop LVGL dot poll timer
-//   if (metro_dot_timer) { lv_timer_del(metro_dot_timer); metro_dot_timer = nullptr; }
-//   ledcWrite(BUZZER_PIN, 0);
-//   ledcChangeFrequency(BUZZER_PIN, 2000, 8);
-//   metro_running    = false;
-//   metro_beat_idx   = 0;
-//   metro_beat_fired = -1;
-//   for (int i = 0; i < 4; i++)
-//     if (metro_dots[i]) lv_obj_set_style_bg_color(metro_dots[i], lv_color_make(35,35,45), 0);
-//   if (metro_start_lbl) lv_label_set_text(metro_start_lbl, "START");
-//   // UI pointers intentionally NOT nulled — screen is still alive.
-// }
-
-// // Null all UI refs and delete hw timers. Call ONLY when screen is destroyed.
-// static void metro_clear_ui()
-// {
-//   // Delete hw timers — they must be destroyed and re-created on next open
-//   if (metro_hw_timer)   { esp_timer_stop(metro_hw_timer);   esp_timer_delete(metro_hw_timer);   metro_hw_timer   = nullptr; }
-//   if (metro_hw_off_tmr) { esp_timer_stop(metro_hw_off_tmr); esp_timer_delete(metro_hw_off_tmr); metro_hw_off_tmr = nullptr; }
-//   if (metro_dot_timer)  { lv_timer_del(metro_dot_timer);    metro_dot_timer  = nullptr; }
-//   for (int i = 0; i < 4; i++) metro_dots[i] = nullptr;
-//   metro_start_lbl = metro_slider = metro_bpm_lbl = nullptr;
-// }
-
-// // Full stop: audio off + UI refs nulled. For apps_close / longpress exit.
-// static void metro_stop()
-// {
-//   metro_stop_audio();
-//   metro_clear_ui();
-// }
-
-// static void metro_start()
-// {
-//   metro_stop_audio();  // stop hw timer; UI pointers stay valid
-
-//   // Create hw timers on first use (or after screen rebuild)
-//   if (!metro_hw_timer) {
-//     esp_timer_create_args_t ba = {};
-//     ba.callback = metro_hw_beat_cb;
-//     ba.name     = "m_beat";
-//     esp_timer_create(&ba, &metro_hw_timer);
-//   }
-//   if (!metro_hw_off_tmr) {
-//     esp_timer_create_args_t oa = {};
-//     oa.callback = metro_hw_off_cb;
-//     oa.name     = "m_off";
-//     esp_timer_create(&oa, &metro_hw_off_tmr);
-//   }
-
-//   metro_running    = true;
-//   metro_beat_idx   = 0;
-//   metro_beat_fired = -1;
-
-//   // Float division → round to nearest µs → sub-µs residual error per beat
-//   uint64_t period_us = (uint64_t)(60000000.0f / (float)metro_bpm + 0.5f);
-//   esp_timer_start_periodic(metro_hw_timer, period_us);
-
-//   // LVGL poll at 20 ms — updates dot colours from hw beat signal
-//   if (!metro_dot_timer)
-//     metro_dot_timer = lv_timer_create(metro_dot_poll_cb, 20, nullptr);
-
-//   if (metro_start_lbl) lv_label_set_text(metro_start_lbl, "STOP");
-//   metro_hw_beat_cb(nullptr);  // fire first beat immediately
-// }
-
-// static void metro_set_bpm(int bpm)
-// {
-//   if (bpm < METRO_BPM_MIN) bpm = METRO_BPM_MIN;
-//   if (bpm > METRO_BPM_MAX) bpm = METRO_BPM_MAX;
-//   metro_bpm = bpm;
-//   if (metro_bpm_lbl) {
-//     char buf[8]; snprintf(buf, sizeof(buf), "%d", metro_bpm);
-//     lv_label_set_text(metro_bpm_lbl, buf);
-//   }
-//   if (metro_slider) lv_slider_set_value(metro_slider, metro_bpm, LV_ANIM_OFF);
-//   if (metro_running && metro_hw_timer) {
-//     uint64_t period_us = (uint64_t)(60000000.0f / (float)metro_bpm + 0.5f);
-//     esp_timer_stop(metro_hw_timer);
-//     esp_timer_start_periodic(metro_hw_timer, period_us);
-//   }
-// }
-
-// static void metro_minus_cb(lv_event_t *e)
-// { if (lv_event_get_code(e)==LV_EVENT_CLICKED) metro_set_bpm(metro_bpm - 1); }
-// static void metro_plus_cb(lv_event_t *e)
-// { if (lv_event_get_code(e)==LV_EVENT_CLICKED) metro_set_bpm(metro_bpm + 1); }
-// static void metro_start_cb(lv_event_t *e)
-// {
-//   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-//   if (metro_running) metro_stop_audio(); else metro_start();
-// }
-// static void metro_slider_cb(lv_event_t *e)
-// {
-//   if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
-//   // Use event target — global metro_slider may be nullptr after metro_stop()
-//   lv_obj_t *sl = (lv_obj_t *)lv_event_get_target(e);
-//   if (!sl) return;
-//   int val = (int)lv_slider_get_value(sl);
-//   metro_bpm = val;  // update bpm directly, avoid lv_slider_set_value loop
-//   if (metro_bpm_lbl) {
-//     char buf[8]; snprintf(buf, sizeof(buf), "%d", metro_bpm);
-//     lv_label_set_text(metro_bpm_lbl, buf);
-//   }
-//   if (metro_running && metro_hw_timer) {
-//     uint64_t period_us = (uint64_t)(60000000.0f / (float)metro_bpm + 0.5f);
-//     esp_timer_stop(metro_hw_timer);
-//     esp_timer_start_periodic(metro_hw_timer, period_us);
-//   }
-// }
-// static void metro_sig_cb(lv_event_t *e)
-// {
-//   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-//   int sig = (int)(intptr_t)lv_event_get_user_data(e);
-//   if (sig == metro_beats) return;
-//   metro_beats = sig;
-//   bool was = metro_running;
-//   metro_stop_audio();
-//   metro_build_ui();
-//   if (was) metro_start();
-// }
-
-// // Styled button helper
-// static lv_obj_t *metro_btn(lv_obj_t *p, int x, int y, int w, int h,
-//                             const char *txt, lv_event_cb_t cb, void *ud = nullptr)
-// {
-//   lv_obj_t *btn = lv_obj_create(p);
-//   lv_obj_set_pos(btn, x, y); lv_obj_set_size(btn, w, h);
-//   lv_obj_set_style_bg_color(btn, lv_color_make(42,42,52), 0);
-//   lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-//   lv_obj_set_style_border_color(btn, lv_color_make(70,70,90), 0);
-//   lv_obj_set_style_border_width(btn, 1, 0);
-//   lv_obj_set_style_radius(btn, 6, 0);
-//   lv_obj_set_style_pad_all(btn, 0, 0);
-//   lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
-//   lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
-//   if (cb) lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, ud);
-//   lv_obj_add_event_cb(btn, apps_longpress_cb, LV_EVENT_LONG_PRESSED, nullptr);
-//   lv_obj_t *lbl = lv_label_create(btn);
-//   lv_label_set_text(lbl, txt);
-//   lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-//   lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
-//   lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 0);
-//   return lbl;  // returns the label for easy update
-// }
-
-// static void metro_build_ui()
-// {
-//   lv_obj_clean(apps_cont);
-//   for (int i = 0; i < 4; i++) metro_dots[i] = nullptr;
-//   metro_bpm_lbl = metro_slider = metro_start_lbl = nullptr;
-
-//   lv_obj_set_style_bg_color(apps_cont, lv_color_make(18,18,26), 0);
-
-//   // ── Layout constants ───────────────────────────────────────────────────────
-//   // Row1 y=4  h=30: slider (thin track) + BPM value + "BPM" label
-//   // Row2 y=40 h=34: [-1] [+1] [START] full-width buttons
-//   // Row3 y=82 h=20: beat dots (shorter)
-//   // Row4 y=110 h=26: time-sig tabs
-//   // Hint y=148
-//   //
-//   // Margins: 8px left/right. Button gaps: 4px.
-//   // -5: w=90  +5: w=90  START: w=116  (8+90+4+90+4+116+8=320)
-//   const int LM = 8;         // left margin
-//   const int BTN_H = 34;
-//   const int BTN_Y = 40;
-//   const int BTN_SM = 90;    // small button width
-//   const int BTN_GAP = 4;
-//   const int BTN_START = 320 - LM - BTN_SM - BTN_GAP - BTN_SM - BTN_GAP - LM;  // 116
-
-//   // ── Row 1: Slider + BPM number ─────────────────────────────────────────────
-//   // Slider: x=8, y=12, width=174, track h=12 (thin)
-//   // BPM:    x=190, y=4, montserrat_24 (fits 3 digits: ~44px wide)
-//   // Unit:   x=238, y=14, montserrat_14
-//   const int SL_X=LM+12, SL_Y=12, SL_W=174, SL_H=12;
-
-//   metro_slider = lv_slider_create(apps_cont);
-//   lv_obj_set_pos(metro_slider, SL_X, SL_Y);
-//   lv_obj_set_size(metro_slider, SL_W, SL_H);
-//   lv_slider_set_range(metro_slider, METRO_BPM_MIN, METRO_BPM_MAX);
-//   lv_slider_set_value(metro_slider, metro_bpm, LV_ANIM_OFF);
-//   // Thin track
-//   lv_obj_set_style_bg_color(metro_slider, lv_color_make(50,50,65), LV_PART_MAIN);
-//   lv_obj_set_style_bg_opa(metro_slider, LV_OPA_COVER, LV_PART_MAIN);
-//   lv_obj_set_style_radius(metro_slider, 3, LV_PART_MAIN);
-//   lv_obj_set_style_border_width(metro_slider, 0, LV_PART_MAIN);
-//   lv_obj_set_style_height(metro_slider, SL_H, LV_PART_MAIN);
-//   // Indicator
-//   lv_obj_set_style_bg_color(metro_slider, lv_color_make(60,180,60), LV_PART_INDICATOR);
-//   lv_obj_set_style_bg_opa(metro_slider, LV_OPA_COVER, LV_PART_INDICATOR);
-//   lv_obj_set_style_radius(metro_slider, 3, LV_PART_INDICATOR);
-//   // Knob (keep larger for touch)
-//   lv_obj_set_style_bg_color(metro_slider, lv_color_make(80,220,80), LV_PART_KNOB);
-//   lv_obj_set_style_bg_opa(metro_slider, LV_OPA_COVER, LV_PART_KNOB);
-//   lv_obj_set_style_radius(metro_slider, 5, LV_PART_KNOB);
-//   lv_obj_set_style_pad_all(metro_slider, 6, LV_PART_KNOB);
-//   // Events — add longpress so slider area can exit too
-//   lv_obj_add_event_cb(metro_slider, metro_slider_cb, LV_EVENT_VALUE_CHANGED, nullptr);
-//   // lv_obj_add_event_cb(metro_slider, apps_longpress_cb, LV_EVENT_LONG_PRESSED, nullptr);
-
-//   // BPM value — montserrat_24: "240" = ~46px wide, 24px tall, no overlap
-//   metro_bpm_lbl = lv_label_create(apps_cont);
-//   char bpmBuf[8]; snprintf(bpmBuf, sizeof(bpmBuf), "%d", metro_bpm);
-//   lv_label_set_text(metro_bpm_lbl, bpmBuf);
-//   lv_obj_set_style_text_font(metro_bpm_lbl, &lv_font_montserrat_24, 0);
-//   lv_obj_set_style_text_color(metro_bpm_lbl, lv_color_white(), 0);
-//   lv_obj_set_pos(metro_bpm_lbl, SL_X + SL_W + 20, 6);  // right of slider, vertically centred
-
-//   lv_obj_t *bpm_unit = lv_label_create(apps_cont);
-//   lv_label_set_text(bpm_unit, "BPM");
-//   lv_obj_set_style_text_font(bpm_unit, &lv_font_montserrat_14, 0);
-//   lv_obj_set_style_text_color(bpm_unit, lv_color_make(160,160,180), 0);
-//   lv_obj_set_pos(bpm_unit, SL_X + SL_W + 70, 12);  // right of BPM number
-
-//   // ── Row 2: Full-width buttons ─────────────────────────────────────────────
-//   int bx = LM;
-//   metro_btn(apps_cont, bx,        BTN_Y, BTN_SM,    BTN_H, "-1",   metro_minus_cb);
-//   metro_btn(apps_cont, bx+BTN_SM+BTN_GAP, BTN_Y, BTN_SM, BTN_H, "+1", metro_plus_cb);
-//   metro_start_lbl = metro_btn(apps_cont,
-//     bx + BTN_SM + BTN_GAP + BTN_SM + BTN_GAP, BTN_Y, BTN_START, BTN_H,
-//     metro_running ? "STOP" : "START", metro_start_cb);
-
-//   // ── Row 3: Beat dots (shorter: h=20) ─────────────────────────────────────
-//   const int DH=20, DW=56, D_GAP=8;
-//   int total_w = metro_beats * DW + (metro_beats - 1) * D_GAP;
-//   int dx = (320 - total_w) / 2;
-//   for (int i = 0; i < metro_beats; i++) {
-//     lv_obj_t *dot = lv_obj_create(apps_cont);
-//     lv_obj_set_pos(dot, dx, 82); lv_obj_set_size(dot, DW, DH);
-//     lv_obj_set_style_bg_color(dot, lv_color_make(35,35,45), 0);
-//     lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-//     lv_obj_set_style_radius(dot, 6, 0);
-//     lv_obj_set_style_border_width(dot, 0, 0);
-//     lv_obj_set_style_pad_all(dot, 0, 0);
-//     lv_obj_clear_flag(dot, (lv_obj_flag_t)(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-//     metro_dots[i] = dot;
-//     dx += DW + D_GAP;
-//   }
-
-//   // ── Row 4: Time-sig tabs ──────────────────────────────────────────────────
-//   const int sigs[3] = {2, 3, 4};
-//   const int TW=56, T_GAP=6;
-//   int tx = (320 - (3*TW + 2*T_GAP)) / 2;
-//   for (int i = 0; i < 3; i++) {
-//     bool active = (sigs[i] == metro_beats);
-//     lv_obj_t *tab = lv_obj_create(apps_cont);
-//     lv_obj_set_pos(tab, tx, 110); lv_obj_set_size(tab, TW, 26);
-//     lv_obj_set_style_bg_color(tab,
-//       active ? lv_color_white() : lv_color_make(42,42,52), 0);
-//     lv_obj_set_style_bg_opa(tab, LV_OPA_COVER, 0);
-//     lv_obj_set_style_border_color(tab, lv_color_make(120,120,140), 0);
-//     lv_obj_set_style_border_width(tab, 1, 0);
-//     lv_obj_set_style_radius(tab, 5, 0);
-//     lv_obj_set_style_pad_all(tab, 0, 0);
-//     lv_obj_clear_flag(tab, LV_OBJ_FLAG_SCROLLABLE);
-//     lv_obj_add_flag(tab, LV_OBJ_FLAG_CLICKABLE);
-//     // lv_obj_add_event_cb(tab, metro_sig_cb, LV_EVENT_CLICKED, (void*)(intptr_t)sigs[i]);
-//     lv_obj_add_event_cb(tab, metro_sig_cb, LV_EVENT_SHORT_CLICKED, (void*)(intptr_t)sigs[i]);
-//     lv_obj_add_event_cb(tab, apps_longpress_cb, LV_EVENT_LONG_PRESSED, nullptr);
-//     char stxt[6]; snprintf(stxt, sizeof(stxt), "%d/4", sigs[i]);
-//     lv_obj_t *slbl = lv_label_create(tab);
-//     lv_label_set_text(slbl, stxt);
-//     lv_obj_set_style_text_font(slbl, &lv_font_montserrat_14, 0);
-//     lv_obj_set_style_text_color(slbl,
-//       active ? lv_color_make(20,20,20) : lv_color_white(), 0);
-//     lv_obj_align(slbl, LV_ALIGN_CENTER, 0, 0);
-//     tx += TW + T_GAP;
-//   }
-
-//   // Hint
-//   lv_obj_t *hint = lv_label_create(apps_cont);
-//   lv_label_set_text(hint, "hold to exit");
-//   lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
-//   lv_obj_set_style_text_color(hint, lv_color_make(70,70,95), 0);
-//   lv_obj_set_style_text_opa(hint, LV_OPA_60, 0);
-//   lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -4);
-// }
-
-// static void app_screen_metronome()
-// {
-//   app_subphase = 1;
-//   metro_build_ui();
-// }
-
-// // ── App start tap: coin only (rps+dice use their own starters) ────────────────
-// static void app_start_tap_cb(lv_event_t *e)
-// {
-//   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-//   if (apps_idx == 2) { app_screen_result(random(2)); return; }  // coin 0-1
-// }
-
-// // ── Game start screen ─────────────────────────────────────────────────────────
-// static void app_screen_start()
-// {
-//   if (apps_idx >= 4) return;
-//   app_anim_stop();
-
-//   if (apps_idx == 3) {
-//     app_screen_metronome();
-//     return;
-//   }
-//   if (apps_idx == 0) {
-//     app_screen_rps_start();
-//     return;
-//   }
-//   if (apps_idx == 1) {
-//     app_screen_dice_start();
-//     return;
-//   }
-
-//   // ── Coin: tap anywhere to flip ────────────────────────────────────────────
-//   lv_obj_clean(apps_cont);
-//   app_subphase = 1;
-
-//   lv_obj_t *t = lv_label_create(apps_cont);
-//   lv_label_set_text(t, "Flip a Coin");
-//   lv_obj_set_style_text_font(t, &dejavu_mono_16, 0);
-//   lv_obj_set_style_text_color(t, lv_color_white(), 0);
-//   lv_obj_align(t, LV_ALIGN_CENTER, 0, -28);
-
-//   lv_obj_t *action = lv_label_create(apps_cont);
-//   lv_label_set_text(action, "[ tap to flip ]");
-//   lv_obj_set_style_text_font(action, &dejavu_mono_16, 0);
-//   lv_obj_set_style_text_color(action, lv_color_make(100, 200, 100), 0);
-//   lv_obj_align(action, LV_ALIGN_CENTER, 0, 8);
-
-//   app_hint(apps_cont, "tap to flip  .  hold to exit");
-//   app_tapzone(apps_cont, app_start_tap_cb);
-// }
-
-// // ── Apps carousel tap (enter game) ───────────────────────────────────────────
-// static void apps_tap_enter_cb(lv_event_t *e)
-// {
-//   if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-//   if (apps_idx == 4) {
-//     cfg.menu_sounds = !cfg.menu_sounds;
-//     save_config();
-//     if (cfg.menu_sounds) menu_tone_hi();  // confirm it's on
-//     apps_carousel_build();
-//   } else {
-//     app_screen_start();
-//   }
-// }
-
-// // ── Apps carousel builder (the games)─────────────────────────────────────────────────────
-// static void apps_carousel_build()
-// {
-//   metro_clear_ui();  // null UI refs before lv_obj_clean frees them
-//   lv_obj_clean(apps_cont);
-//   app_subphase = 0;
-
-//   static const struct { const char *name; const char *desc; } items[5] = {
-//     {"Rock Paper Scissors", "An interactive ASCII Game"},
-//     {"Rolling Dice",        "An interactive ASCII Dice"},
-//     {"Flip a Coin",         "An interactive ASCII Coin"},
-//     {"Metronome",           "Tempo keeper for musicians"},
-//     {nullptr,               nullptr},  // item 4 = Sounds toggle
-//   };
-
-//   // Left arrow + zone
-//   lv_obj_t *larr = lv_label_create(apps_cont);
-//   lv_label_set_text(larr, LV_SYMBOL_LEFT);
-//   lv_obj_set_style_text_font(larr, &lv_font_montserrat_48, 0);
-//   lv_obj_set_style_text_color(larr, lv_color_make(80, 100, 180), 0);
-//   lv_obj_align(larr, LV_ALIGN_LEFT_MID, 6, 0);
-//   { lv_obj_t *z = lv_obj_create(apps_cont);
-//     lv_obj_set_size(z,60,172); lv_obj_set_pos(z,0,0);
-//     lv_obj_set_style_bg_opa(z,LV_OPA_TRANSP,0); lv_obj_set_style_border_width(z,0,0);
-//     lv_obj_set_style_pad_all(z,0,0); lv_obj_set_style_radius(z,0,0);
-//     lv_obj_clear_flag(z,LV_OBJ_FLAG_SCROLLABLE);
-//     lv_obj_add_event_cb(z,apps_left_cb,LV_EVENT_PRESSED,nullptr);
-//     lv_obj_add_event_cb(z,apps_longpress_cb,LV_EVENT_LONG_PRESSED,nullptr); }
-
-//   // Right arrow + zone
-//   lv_obj_t *rarr = lv_label_create(apps_cont);
-//   lv_label_set_text(rarr, LV_SYMBOL_RIGHT);
-//   lv_obj_set_style_text_font(rarr, &lv_font_montserrat_48, 0);
-//   lv_obj_set_style_text_color(rarr, lv_color_make(80, 100, 180), 0);
-//   lv_obj_align(rarr, LV_ALIGN_RIGHT_MID, -6, 0);
-//   { lv_obj_t *z = lv_obj_create(apps_cont);
-//     lv_obj_set_size(z,60,172); lv_obj_set_pos(z,260,0);
-//     lv_obj_set_style_bg_opa(z,LV_OPA_TRANSP,0); lv_obj_set_style_border_width(z,0,0);
-//     lv_obj_set_style_pad_all(z,0,0); lv_obj_set_style_radius(z,0,0);
-//     lv_obj_clear_flag(z,LV_OBJ_FLAG_SCROLLABLE);
-//     lv_obj_add_event_cb(z,apps_right_cb,LV_EVENT_PRESSED,nullptr);
-//     lv_obj_add_event_cb(z,apps_longpress_cb,LV_EVENT_LONG_PRESSED,nullptr); }
-
-//   if (apps_idx == 4) {
-//     // ── Sounds toggle (inline, mirrors WiFi toggle in settings) ──────────
-//     lv_obj_t *sicon = lv_label_create(apps_cont);
-//     lv_label_set_text(sicon, cfg.menu_sounds ? LV_SYMBOL_VOLUME_MAX : LV_SYMBOL_MUTE);
-//     lv_obj_set_style_text_font(sicon, &lv_font_montserrat_48, 0);
-//     lv_obj_set_style_text_color(sicon,
-//       cfg.menu_sounds ? lv_color_make(80,200,120) : lv_color_make(180,60,60), 0);
-//     lv_obj_align(sicon, LV_ALIGN_CENTER, 0, -18);
-//     lv_obj_t *sdesc = lv_label_create(apps_cont);
-//     lv_label_set_text(sdesc, cfg.menu_sounds ? "Sounds: ON" : "Sounds: OFF");
-//     lv_obj_set_style_text_font(sdesc, &lv_font_montserrat_14, 0);
-//     lv_obj_set_style_text_color(sdesc,
-//       cfg.menu_sounds ? lv_color_make(80,200,120) : lv_color_make(180,60,60), 0);
-//     lv_obj_align(sdesc, LV_ALIGN_CENTER, 0, 28);
-//   } else {
-//     // ── Game item ─────────────────────────────────────────────────────────
-//     lv_obj_t *name_lbl = lv_label_create(apps_cont);
-//     lv_label_set_text(name_lbl, items[apps_idx].name);
-//     lv_obj_set_style_text_font(name_lbl, &lv_font_montserrat_24, 0);
-//     lv_obj_set_style_text_color(name_lbl, lv_color_white(), 0);
-//     lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_WRAP);
-//     lv_obj_set_width(name_lbl, 180);
-//     lv_obj_set_style_text_align(name_lbl, LV_TEXT_ALIGN_CENTER, 0);
-//     lv_obj_align(name_lbl, LV_ALIGN_CENTER, 0, -14);
-
-//     // Description
-//     lv_obj_t *desc_lbl = lv_label_create(apps_cont);
-//     lv_label_set_text(desc_lbl, items[apps_idx].desc);
-//     lv_obj_set_style_text_font(desc_lbl, &lv_font_montserrat_14, 0);
-//     lv_obj_set_style_text_color(desc_lbl, lv_color_make(100, 180, 100), 0);
-//     lv_obj_align(desc_lbl, LV_ALIGN_CENTER, 0, 20);
-//   }
-
-//   // Centre tap zone — CLICKED enters, LONG_PRESSED exits
-//   { lv_obj_t *z = lv_obj_create(apps_cont);
-//     lv_obj_set_size(z,200,172); lv_obj_set_pos(z,60,0);
-//     lv_obj_set_style_bg_opa(z,LV_OPA_TRANSP,0); lv_obj_set_style_border_width(z,0,0);
-//     lv_obj_set_style_pad_all(z,0,0); lv_obj_set_style_radius(z,0,0);
-//     lv_obj_clear_flag(z,LV_OBJ_FLAG_SCROLLABLE);
-//     // lv_obj_add_event_cb(z,apps_tap_enter_cb,LV_EVENT_CLICKED,nullptr);
-//     lv_obj_add_event_cb(z,apps_tap_enter_cb,LV_EVENT_SHORT_CLICKED,nullptr);
-//     lv_obj_add_event_cb(z,apps_longpress_cb,LV_EVENT_LONG_PRESSED,nullptr); }
-
-//   // Hint above dots
-//   lv_obj_t *hint = lv_label_create(apps_cont);
-//   lv_label_set_text(hint, apps_idx == 4 ? "tap to toggle  .  hold to exit"
-//                                          : "tap to play  .  hold to exit");
-//   lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
-//   lv_obj_set_style_text_color(hint, lv_color_make(70, 70, 95), 0);
-//   lv_obj_set_style_text_opa(hint, LV_OPA_60, 0);
-//   lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -18);
-
-//   // 5 position dots
-//   for (int i = 0; i < 5; i++) {
-//     lv_obj_t *dot = lv_label_create(apps_cont);
-//     lv_obj_set_style_text_font(dot, &dejavu_mono_14, 0);
-//     lv_label_set_text(dot, i==apps_idx ? "\xe2\x97\x8f" : "\xe2\x97\x8b");
-//     lv_obj_set_style_text_color(dot, i==apps_idx ? lv_color_white() : lv_color_make(80,80,100), 0);
-//     lv_obj_set_pos(dot, 130 + i * 14, 156);
-//   }
-// }
-
-// // ── Open apps container ───────────────────────────────────────────────────────
-// static void show_apps()
-// {
-//   if (apps_cont) return;
-//   apps_idx = 0; app_subphase = 0;
-//   apps_cont = lv_obj_create(lv_scr_act());
-//   lv_obj_set_size(apps_cont, 320, 172);
-//   lv_obj_align(apps_cont, LV_ALIGN_CENTER, 0, 0);
-//   lv_obj_set_style_bg_color(apps_cont, lv_color_make(5, 8, 22), 0);
-//   lv_obj_set_style_bg_opa(apps_cont, LV_OPA_COVER, 0);
-//   lv_obj_set_style_border_width(apps_cont, 0, 0);
-//   lv_obj_set_style_pad_all(apps_cont, 0, 0);
-//   lv_obj_set_style_radius(apps_cont, 0, 0);
-//   lv_obj_clear_flag(apps_cont, LV_OBJ_FLAG_SCROLLABLE);
-//   // Register longpress ONCE at creation — lv_obj_clean() keeps this alive
-//   // through all rebuilds, so we must NOT add it again in any rebuild path.
-//   lv_obj_add_event_cb(apps_cont, apps_longpress_cb, LV_EVENT_LONG_PRESSED, nullptr);
-//   apps_carousel_build();
-// }
-
 // Zone callbacks
 // whyy is this zone code all the way over here?
 static void zone_ul_cb(lv_event_t *e)
 {
-  // can we disable?
-  // if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
   show_gif_fullscreen(GIF_SMILE_PATH);
-  // Start emotion-tilt mode: tilt the device to change the GIF
-  // if (overlay_cont && imuReady) {
-  //   emotion_tilt_active  = true;
-  //   emotion_current_gif  = GIF_SMILE_PATH;
-  //   if (!tilt_timer)
-  //     tilt_timer = lv_timer_create(tilt_poll_cb, 400, nullptr);
-  //   Serial.println("[EMOTION] Tilt mode active");
-  // }
-  // Long-press on the smile GIF opens the apps menu (math challenge gate)
-  // if (overlay_cont) {
-  //   lv_obj_add_event_cb(overlay_cont, apps_gif_longpress_cb, LV_EVENT_LONG_PRESSED, nullptr);
-  //   lv_obj_t *gif_w = (lv_obj_t *)lv_obj_get_user_data(overlay_cont);
-  //   if (gif_w)
-  //     lv_obj_add_event_cb(gif_w, apps_gif_longpress_cb, LV_EVENT_LONG_PRESSED, nullptr);
-  // }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -4694,7 +3464,7 @@ static void home_screen_init(void)
   battery_timer = lv_timer_create(battery_timer_callback, 1000, nullptr);
   wifi_timer    = lv_timer_create(wifi_poll_cb, 5000, nullptr);
   ble_timer    = lv_timer_create(ble_poll_cb, 5000, nullptr);
-  temp_timer    = lv_timer_create(temp_poll_cb, 2000, nullptr);
+  temp_timer    = lv_timer_create(temp_poll_cb, 500, nullptr);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
