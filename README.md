@@ -1,7 +1,5 @@
 ## 🌐 View Demo
 
-👉 https://andreimagic.github.io/ESP32_C6_Touch_LCD_1_47_LVGL_Animated_Clock/
-
 [![Watch Demo](https://img.youtube.com/vi/FQkz1KrQX3I/0.jpg)](https://youtu.be/FQkz1KrQX3I)
 
 # ESP32-C6 Touch LCD 1.47" — LVGL Animated Clock
@@ -18,16 +16,13 @@ A smart animated clock for kids built on the **Waveshare ESP32-C6 Touch LCD 1.47
 |---|---|
 | **Big clock face** | HH:MM in a full-screen custom font (Montserrat 96px) |
 | **Splash screen** | "Hello!" on cold boot (2.5 s); "Salut!" on wake from sleep (1 s) |
-| **Animated GIFs** | Smile (day) and Sleep (night) emotions from SD card |
+| **Animated GIFs** | Loaded from SD card |
 | **Scheduled animation** | GIF plays on a configurable minute interval, 800 ms fade back to clock |
 | **Night mode** | Sleep GIF used automatically between 20:00 and 07:00 |
 | **Alarm** | Configurable wake-up time, custom buzzer pattern, `alarm_animation.gif`, fades out after beeping |
 | **Countdown timer** | Set HH:MM in the carousel, live `MM:SS` on clock face, `timer_animation.gif` on completion |
-| **Animation priority** | Alarm and timer always evict any running scheduled animation before playing |
-| **Emotion tilt** | While the smile GIF plays (upper-left tap), tilt the device to change emotion in real-time |
 | **Carousel settings** | Long-press → swipe through Clock / Timer / Alarm / WiFi settings |
 | **Clock editor** | Sets HH:MM **and** DD/MON/YYYY — full date+time offline, no WiFi needed |
-| **Brightness schedule** | Auto-dims at 19:00 → 19:30 → 20:00, brightens at 06:00 → 07:00 |
 | **Tilt brightness** | Tilt device left/right in the Status screen to adjust brightness in 10% steps |
 | **WiFi + NTP** | Connects at boot, syncs time automatically; can be disabled from the carousel |
 | **DST-aware timezone** | POSIX `tz` string in `config.ini` handles daylight saving automatically forever |
@@ -37,12 +32,6 @@ A smart animated clock for kids built on the **Waveshare ESP32-C6 Touch LCD 1.47
 | **Battery warning** | Clock text turns orange ≤ 25%, red ≤ 10%; auto-poweroff countdown at ≤ 10% |
 | **Software power-off** | Long-press battery screen → 5 s countdown → deep sleep; RESET button to wake |
 | **Alarm auto-wake** | Device wakes from deep sleep 5 min before alarm to allow NTP sync; falls back to warning screen if sync fails |
-| **Apps menu** | Long-press the smile GIF → math challenge gate → ASCII games carousel |
-| **Math challenge** | Random arithmetic gate (+ − × ÷, result < 100) with 4 shuffled answer buttons |
-| **Rock Paper Scissors** | Animated 3-2-1 countdown shake → CPU reveals its hand → GO! |
-| **Rolling Dice** | Animated rolling frames → final dice face reveal |
-| **Flip a Coin** | Instant flip with ASCII coin art (heads/tails) |
-| **Apps sounds** | Melody on correct math answer, failure tune on wrong; beeps during animations; toggleable |
 | **SD card config** | All settings in `/config.ini` — no recompile needed |
 | **LVGL v9** | Hardware-accelerated UI, zero blocking in the main loop |
 
@@ -56,8 +45,6 @@ A smart animated clock for kids built on the **Waveshare ESP32-C6 Touch LCD 1.47
 
 The project is built on the Waveshare ESP32-C6 Touch LCD 1.47" development board, which features a 1.47-inch ST7789 display and an AXS5106L touch controller. The board also includes a QMI8658 IMU for motion sensing, an ETA6098 battery charger for power management, and an SD card slot for storage. This all-in-one design simplifies wiring and allows for a compact form factor.
             
-You can purchase the board from [Waveshare](https://www.waveshare.com/esp32-c6-touch-lcd-1.47.htm?&aff_id=150729). It’s an affiliate link, so if you use it, you’re basically buying me a coffee (and I really appreciate it)! ☕
-
 Select **ESP32C6 Dev Module** in Arduino IDE. 
 
 ### Display
@@ -114,8 +101,9 @@ Install these additional libraries through **Arduino IDE → Library Manager** u
 | Library | Version tested | Purpose |
 |---|---|---|
 | **LVGL** | 9.5.0 | UI framework — widgets, animations, timers |
-| **GFX Library for Arduino** | 1.6.5 | Arduino_GFX_Library, ST7789 display driver |
+| **GFX Library for Arduino** | 1.6.6 | Arduino_GFX_Library, ST7789 display driver |
 | **FastIMU** | latest | QMI8658 accelerometer (tilt brightness + emotion tilt) |
+| **NimBLE-Arduino** | 2.5.0 | BLE library to connect to IR thermometer |
 
 These should already be installed via `esp32 by Espressif`
 
@@ -172,7 +160,7 @@ The apps menu and ASCII game screens use DejaVu Sans Mono for fixed-width art re
 
 1. Download **DejaVuSansMono.ttf** from [dejavu-fonts.github.io](https://dejavu-fonts.github.io)
 2. Use the same LVGL font converter tool above
-3. Generate three files with Name = `dejavu_mono_8` / `dejavu_mono_14` / `dejavu_mono_16`, same size values, full printable ASCII range (`0x20-0x7E`), Bpp = `4`
+3. Generate three files with Name = `dejavu_mono_8` / `dejavu_mono_14` / `dejavu_mono_16`, same size values, full printable ASCII range (`0x20, 0x2D, 0x2F-0x3A, 0x43, 0x46, 0x5C, 0x7C`), Bpp = `4`
 4. Place all three `.c` files in the sketch folder
 
 Arduino will compile them automatically as part of the project.
@@ -232,7 +220,7 @@ ntp_server = pool.ntp.org
 # US Eastern:  EST5EDT,M3.2.0,M11.1.0
 # US Pacific:  PST8PDT,M3.2.0,M11.1.0
 # No DST (Japan): JST-9
-tz = CET-1CEST,M3.5.0,M10.5.0/3
+tz = EST5EDT,M3.2.0,M11.1.0
 
 [alarm]
 enabled = true
@@ -283,17 +271,18 @@ The home screen has **four invisible touch zones**. Tap to open a sub-screen. **
 
 ```
 ┌─────────────────────────────────────────┐
-│                   │                     │
-│   Smile GIF       │    Analog Clock     │
-│   (upper-left)    │    (upper-right)    │
-│                   │                     │
-├───────────────────┼─────────────────────┤
-│                   │                     │
-│   Status          │    Battery          │
-│   (lower-left)    │    (lower-right)    │
-│                   │                     │
+│ GIF        │              │ Analog Clock│
+│(upper-left)│              │(upper-right)│
+├─────────────              ──────────────┤
+│                                         │
+│              tap to enter               │
+│              carousel menu              │
+│                                         │
+├─────────────              ──────────────┤
+│Status      │              │Battery      │
+│(lower-left)│              │(lower-right)│
 └─────────────────────────────────────────┘
-         LONG-PRESS anywhere → Carousel menu
+
 ```
 
 When the countdown timer is running, a small `⏹ MM:SS` label appears in the bottom-left corner. When the alarm is enabled, a 🔔 bell icon with the alarm time appears in the bottom-right corner.
@@ -404,60 +393,6 @@ Tapping the screen dismisses the animation and returns to the clock, as usual.
 
 ---
 
-## Apps Menu
-
-### Entry flow
-
-```
-Upper-left tap → Smile GIF plays (emotion tilt active)
-Long-press GIF → Math challenge gate
-  ✓ Correct    → Success melody → Apps carousel
-  ✗ Wrong      → Failure tune → Big white "X" (3 s) → Clock
-```
-
-### Math challenge
-
-A random arithmetic problem (+ − × ÷, result always < 100) is shown in large font. Four shuffled answer buttons appear below. The correct button plays a 12-note success melody; a wrong tap plays a low two-note failure tune and returns to the clock after 3 seconds.
-
-### Apps carousel
-
-Three games plus a sounds toggle, navigated with **◀ ▶**. **Tap** to enter, **long-press** to go back.
-
-```
-┌─────────────────────────────────────────┐
-│                                         │
-│  ◀     Rock Paper Scissors    ▶         │
-│         An interactive ASCII Game       │
-│                                         │
-│      tap to play  .  hold to exit       │
-│              ● ○ ○ ○                    │
-└─────────────────────────────────────────┘
-```
-
-#### Rock Paper Scissors
-
-Tap to start. The device plays an animated countdown in ASCII art:
-
-```
-Ready? → UP "3" → DOWN "3" ♪ → UP "2" → DOWN "2" ♪ → UP "1" → DOWN "1" ♪ → GO! ♪♪
-```
-
-Each step is exactly 250 ms. At GO! the CPU's hand is revealed — play against it with your own hand. Tap to play again, long-press to exit.
-
-#### Rolling Dice
-
-Tap to start. Three animated rolling frames play at 250 ms each (one beep per frame), then the final face (1–6) is revealed with a high tone. Tap to re-roll.
-
-#### Flip a Coin
-
-Tap anywhere to flip. Instant result with ASCII coin art (heads / tails) and a high-tone beep. Tap to flip again.
-
-#### Sounds toggle
-
-The fourth carousel item. Tap to mute/unmute all apps menu and game audio. The setting is saved to `config.ini` under `[menu] sounds`. This does **not** affect alarm or timer buzzer sounds.
-
----
-
 ## Power Off and Wake
 
 ### Powering off
@@ -497,58 +432,9 @@ At alarm time, the following logic applies:
 
 ---
 
-## Daily Automation Schedule
-
-All times are local time. Automation runs whenever the RTC holds a valid time (epoch > 2026-01-01), regardless of WiFi or NTP status.
-
-| Time | Action |
-|---|---|
-| 06:00 | Brightness → 10% |
-| 06:30 | Brightness → 25% |
-| 07:00 | Brightness → 50% |
-| Alarm time | Dismiss scheduled GIF, brightness → 50%, `alarm_animation.gif`, buzzer |
-| Every N min | Scheduled GIF animation (if enabled; skipped when alarm fires same minute) |
-| 19:00 | Brightness → 25% |
-| 19:30 | Brightness → 10% |
-| 20:00 | Brightness → 1% |
-| 20:15 | Sleep GIF starts automatically |
-| 21:00 | Sleep GIF closes automatically |
-
----
-
-## Scheduled Animation
-
-When `[animation] schedule = true`, a GIF plays automatically on the configured interval and fades back over 800 ms.
-
-| Time of day | GIF played |
-|---|---|
-| Day (07:00–19:59) | `cruzr_smile.gif` |
-| Night (20:00–06:59) | `cruzr_sleep.gif` |
-
-Skipped silently if any screen, overlay, or carousel is already open. Alarm and timer always evict a running scheduled animation before playing their own.
-
----
-
-## Buzzer Sounds
-
 ### Alarm and timer pattern
 
 **4 × (200 ms ON + 100 ms OFF) + 1000 ms pause** = one sequence. `beep_sequences` controls how many repeat before auto-stop (0 = until touch). When finite, the animation fades out automatically after the last beep.
-
-### Apps menu sounds (respects `[menu] sounds`)
-
-| Event | Sound |
-|---|---|
-| Correct math answer | 12-note ascending melody |
-| Wrong math answer | Low two-note failure tune (G4 → C4) |
-| RPS down move (×3) | Short A4 beep |
-| RPS GO! reveal | High C6 tone |
-| Dice rolling frame (×3) | Short A4 beep |
-| Dice result reveal | High C6 tone |
-| Coin flip result | High C6 tone |
-| Sounds toggle turned ON | High C6 tone (confirmation) |
-
----
 
 ## Build & Flash
 
@@ -583,8 +469,8 @@ Skipped silently if any screen, overlay, or carousel is already open. Alarm and 
 
 5. Set the correct **Port** (e.g. `COM3` on Windows, `/dev/ttyUSB0` on Linux/macOS)
 6. Install all libraries listed in [Software Dependencies](#software-dependencies)
-7. Edit `lv_conf.h` as described in [lv_conf.h Settings](#lv_confh-settings)
-8. Place all custom font `.c` files in the sketch folder (see [Custom Fonts](#custom-fonts))
+7. (optional) Edit `lv_conf.h` as described in [lv_conf.h Settings](#lv_confh-settings)
+8. (optional) Place all custom font `.c` files in the sketch folder (see [Custom Fonts](#custom-fonts))
 9. Prepare the SD card as described in [SD Card Setup](#sd-card-setup)
 10. Open `ESP32_C6_Touch_LCD_1_47_LVGL_Animated_Clock.ino`, click **Upload**
 11. Open Serial Monitor at **115200 baud** to watch the boot log
@@ -657,8 +543,6 @@ read: 8161
 | Alarm rings twice | RTC drift + NTP correction | Fixed in v1.4.1 — NTP guard prevents double-fire |
 | Warning screen at alarm time | NTP did not sync within 15 min | Check WiFi; device woke 5 min early specifically to allow sync |
 | Buzzer plays all tones at same pitch | Active buzzer used, or ESP32 core issue | Use a **passive** buzzer; firmware uses `ledcChangeFrequency()` for pitch control |
-| Apps menu not opening | Long-pressing wrong zone | Long-press must be on the **smile GIF** (upper-left tap first, then long-press the GIF) |
-| Math challenge not appearing | Smile GIF not open | Must open the smile GIF first by tapping upper-left |
 | Font not found (compile error) | Custom `.c` files missing | Generate and place `montserrat_96.c`, `dejavu_mono_8.c`, `dejavu_mono_14.c`, `dejavu_mono_16.c` |
 | UI stutters during games/math | WiFi reconnect stall | Fixed — `apps_cont` guard added to `wifi_poll_cb` |
 | `last_seen.txt` not created | SD write error or low battery | Check SD card is writable FAT32; battery must be above 3.4V |
@@ -677,20 +561,11 @@ read: 8161
 - **Carousel** — a full-screen LVGL modal opened by long-press. Each tap on ◀/▶ calls `lv_obj_clean()` and rebuilds the view in place. The centre zone uses `LV_EVENT_CLICKED` (not `LV_EVENT_PRESSED`) so long-press and tap are mutually exclusive — the editor never opens before the long-press exit fires.
 - **Shared editor** — `open_editor()` builds the HH:MM widget for Timer and Alarm. `open_clock_editor()` builds the full two-row date+time widget. `modal_longpress_cb()` dispatches to the correct save function based on `carousel_idx`.
 - **Animation priority** — `close_scheduled_gif()` forcefully tears down any scheduled overlay (cancels fade timer, deletes overlay synchronously) before alarm or timer open their GIF. Scheduled animation is also skipped entirely if the alarm fires on the same minute.
-- **Apps menu** — `apps_cont` is a global LVGL object separate from `modal_cont` and `overlay_cont`. `wifi_poll_cb` skips `wifiMulti.run()` while it is open to prevent radio lock stalls during gameplay and math input.
-- **ASCII games** — all art is rendered using DejaVu Mono fixed-width font via LVGL labels. RPS and Dice use LVGL timer callbacks (`rps_anim_tick_cb`, `dice_anim_tick_cb`) at 250 ms intervals for consistent animation cadence. Buzzer tones use `ledcChangeFrequency()` to switch pitch without re-attaching the PWM channel.
-- **Emotion tilt** — `zone_ul_cb` sets `emotion_tilt_active = true` and starts `tilt_timer` after opening the smile GIF. `tilt_poll_cb` branches on this flag: in emotion mode it reads both `accelX` (forward/back) and `accelY` (left/right), determines the desired GIF path, and calls `lv_gif_set_src()` on the existing widget (retrieved from `overlay_cont` user data) only when the path changes. This swaps the animation in-place with no overlay rebuild. Both the flag and the timer are cleared by `overlay_close_event_cb`.
 - **Buzzer state machine** — a single 9-step table drives both alarm and timer patterns. `buzzer_fade_after` is set by the caller for finite sequences; `buzzer_stop()` triggers `overlay_fade_and_close()` automatically after the last beep.
 - **WiFi reconnect guard** — `wifi_poll_cb()` skips `wifiMulti.run()` when any modal or overlay is open, when WiFi is manually disabled (`cfg.wifi_enabled`), and reduces attempts to every 30 s when disconnected — preventing radio lock stalls from blocking UI interaction.
 - **Automation gate** — `run_daily_automation()` fires when `now > 2026-01-01` (RTC sanity check) instead of `timeSynced`, so brightness schedules, alarms, and animations all work correctly when WiFi is disabled or the time was set manually.
 - **Deep sleep & Alarm NTP guard** — `boot_millis` captured at the very start of `setup()`. Wakes 5 min before alarm when > 5 min away, 30 s when close. Holds `alarm_ntp_pending` if time unconfirmed; falls back to warning overlay after 15 min.
 - **config.ini** — parsed once at boot with a hand-rolled INI reader (no external library). On save, `[wifi]`, `[alarm]`, `[timer]`, and `[menu]` sections are fully rewritten; all other sections and comments are preserved.
-
----
-
-## ⚠️ Disclaimer — ASCII Art
-
-Some coin flip ASCII art displayed in the Apps Menu was sourced from [asciiart.eu/video-games/pokemon](https://www.asciiart.eu/video-games/pokemon). All Pokémon characters and names are trademarks of **The Pokémon Company International**. This project is not affiliated with, sponsored by, or endorsed by The Pokémon Company. The art is used here solely for non-commercial, personal, educational purposes.
 
 ---
 

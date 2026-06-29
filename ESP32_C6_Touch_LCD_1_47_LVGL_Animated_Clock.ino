@@ -143,9 +143,12 @@ enum class BleState {
 };
 
 BleState bleState = BleState::IDLE;
-//NimBLE_Async_client
-// static const char* address = "02:b3:ec:c3:6c:9c";
+
 std::string mac_addr = "02:b3:ec:c3:6c:9c";
+// std::string mac_addr = "07:B3:EC:06:CE:6E";
+uint32_t activeTempThreshold_F = 150;
+uint8_t bleConnectAttempts = 1;
+
 static const char* service_name = "SWAN";
 static const char* service_UUID = "0000ffb0-0000-1000-8000-00805f9b34fb";
 static const char* write_characteristic_UUID = 	"0000ffb1-0000-1000-8000-00805f9b34fb";
@@ -153,8 +156,8 @@ static const char* notify_characteristic_UUID = "0000ffb2-0000-1000-8000-00805f9
 
 static const uint8_t service_init[] = {0xAC,0xFF,0xFE,0x15,0x01,0x00,0xCC,0xE0};
 static const uint8_t start_scan[] = {0xBC,0x20,0x00,0x04,0x24};
-static const uint8_t start_scan_passive[] = {0xBC,0x20,0x00,0x20,0x40};
 static const uint8_t stop_scan[] =  {0xBC,0x21,0x00,0x00,0x21};
+static const uint8_t start_scan_passive[] = {0xBC,0x20,0x00,0x20,0x40};
 static const uint8_t laser_toggle[] =  {0xBC,0x01,0x00,0x00,0x01};
 
 bool laser_active = false;
@@ -211,7 +214,6 @@ uint32_t tempFirstReceived = 0;
 bool showTempsOnBoot = false;
 bool showTemps = false;
 uint8_t busyCounter = 0;
-uint32_t activeTempThreshold_F = 100;
 
 
 void print_ble_raw_data(uint8_t* pData, size_t length) {
@@ -979,7 +981,7 @@ bool connect(NimBLEClient* pClient, NimBLEAddress bleAddress, bool deleteAttr) {
   if (pClient && pClient->isConnected()) {
       pClient->disconnect();
   }
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < bleConnectAttempts; i++) {
       Serial.printf("Connect attempt: %d\n", i); 
       if (pClient->connect(bleAddress,deleteAttr)) {
           Serial.printf("[BLE] connection success\n");
@@ -1001,19 +1003,20 @@ void ble_setup() {
 
   NimBLEDevice::init("");
   NimBLEDevice::setPower(3); /** +3db */
-  pClient = NimBLEDevice::createClient();
-  if (!pClient) {
-    Serial.println("Failed to create BLE client");
-    return;
-  }
-  pClient->setClientCallbacks(&clientCallbacks, false);
-  NimBLEAddress bleAddress(mac_addr, BLE_ADDR_PUBLIC);
-  if (!connect(pClient, bleAddress, true)) {
-    Serial.printf("Failed to connect to %s after 5 attempts\n", mac_addr.c_str());
-    bleState = BleState::IDLE;
-  } else {
-    bleState = BleState::CONNECTED;
-  }
+  bleState = BleState::CONNECTING;
+  // pClient = NimBLEDevice::createClient();
+  // if (!pClient) {
+  //   Serial.println("Failed to create BLE client");
+  //   return;
+  // }
+  // pClient->setClientCallbacks(&clientCallbacks, false);
+  // NimBLEAddress bleAddress(mac_addr, BLE_ADDR_PUBLIC);
+  // if (!connect(pClient, bleAddress, true)) {
+  //   Serial.printf("Failed to connect to %s after 5 attempts\n", mac_addr.c_str());
+  //   bleState = BleState::IDLE;
+  // } else {
+  //   bleState = BleState::CONNECTED;
+  // }
 }
 
 
@@ -1101,7 +1104,7 @@ void ble_loop() {
           }
           if (millis() - tryTime > 3000) {
             auto pClient = NimBLEDevice::getClientByHandle(connHandle);
-            pClient->disconnect();
+            if (pClient) pClient->disconnect();
             bleBusy = false;
             bleState = BleState::OFF;
             deviceMode = DeviceMode::PASSIVE;
@@ -1231,6 +1234,13 @@ void ble_loop() {
             setState(DeviceState::READY);
           }
           showTemps = true;
+          
+          //after 5 sec, turn off laser regardless of mode
+          if ((millis() - tryTime > 5000) && laser_active) {
+            ble_write(laser_toggle, sizeof(laser_toggle));
+            laser_active = !laser_active;
+            printf("[ble_laser timeout] laser is disabled\n");
+          }
           //custom stop
           // if (millis() - tryTime > 10000) {
           //   setState(DeviceState::STOPPING);
@@ -1286,9 +1296,11 @@ void ble_loop() {
         }
         case DeviceState::STOPPED: {
           auto pClient = NimBLEDevice::getClientByHandle(connHandle);
-          ble_write(laser_toggle, sizeof(laser_toggle));
-          laser_active = !laser_active;
-          printf("laser is %b\n", laser_active);
+          if (deviceMode == DeviceMode::ACTIVE && !laser_active) {
+            ble_write(laser_toggle, sizeof(laser_toggle));
+            laser_active = !laser_active;
+            printf("laser is active\n");
+          }
           setState(DeviceState::READY);
           tryTime = millis();
           // pClient->disconnect();
